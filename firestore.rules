@@ -115,7 +115,7 @@ service cloud.firestore {
       allow read: if isOwner(userId) || isAdmin();
       allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
                       (request.resource.data.role == 'user' || isAdmin());
-      allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role && !('blocked' in request.resource.data));
+      allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role && (!('blocked' in request.resource.data) || request.resource.data.blocked == resource.data.blocked));
     }
 
     match /products/{productId} {
@@ -132,12 +132,14 @@ service cloud.firestore {
     }
 
     match /support_messages/{messageId} {
-      allow read, delete: if isAdmin();
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
       allow create: if isAuthenticated() && 
                       request.resource.data.userEmail == request.auth.token.email &&
                       request.resource.data.message is string &&
                       request.resource.data.message.size() > 0 &&
                       request.resource.data.message.size() < 2000;
+      allow update: if isAdmin();
     }
   }
 }

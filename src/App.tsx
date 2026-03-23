@@ -28,7 +28,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, googleProvider, handleFirestoreError, OperationType, sendEmailVerification } from './firebase';
 import { 
   signInWithPopup, 
   onAuthStateChanged, 
@@ -82,7 +82,7 @@ interface Order {
   credentials?: { [productId: string]: string | { email?: string, pass?: string, key?: string } };
 }
 
-type View = 'login' | 'home' | 'cart' | 'payment' | 'support' | 'orders' | 'admin';
+type View = 'login' | 'home' | 'payment' | 'support' | 'orders' | 'admin';
 
 interface UserProfile {
   uid: string;
@@ -99,13 +99,9 @@ export default function App() {
     const saved = localStorage.getItem('nexus_view');
     return (saved as View) || 'home';
   });
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [allOrders, setAllOrders] = useState<Order[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
@@ -131,6 +127,9 @@ export default function App() {
   
   const [confirmingOrder, setConfirmingOrder] = useState<Order | null>(null);
   const [cancellingOrder, setCancellingOrder] = useState<Order | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState<any | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [confirmEmail, setConfirmEmail] = useState('');
   const [confirmPass, setConfirmPass] = useState('');
   const [confirmKey, setConfirmKey] = useState('');
@@ -144,32 +143,48 @@ export default function App() {
     description: ''
   });
 
+  // Support Page State
+  const [supportMsg, setSupportMsg] = useState('');
+  const [supportSending, setSupportSending] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState('');
+
+  // Payment Settings State
+  const [bkashNum, setBkashNum] = useState('');
+  const [nagadNum, setNagadNum] = useState('');
+  const [savingPaymentSettings, setSavingPaymentSettings] = useState(false);
+
+  // Helper for toast
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  useEffect(() => {
+    setBkashNum(paymentSettings.bKash);
+    setNagadNum(paymentSettings.Nagad);
+  }, [paymentSettings]);
+
   // --- Firebase Auth & Profile ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        if (!firebaseUser.email?.endsWith('@gmail.com')) {
-          await signOut(auth);
-          alert('Only @gmail.com addresses are allowed.');
-          setLoading(false);
-          return;
-        }
-
         const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
         if (userDoc.exists()) {
           const profile = userDoc.data() as UserProfile;
           if (profile.blocked) {
             await signOut(auth);
-            alert('Your account has been blocked. Please contact support.');
+            showToast('Your account has been blocked. Please contact support.');
             setLoading(false);
             return;
           }
           setUser(profile);
+          setView(prev => prev === 'login' ? 'home' : prev);
         } else {
           const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com';
           const newProfile: UserProfile = {
             uid: firebaseUser.uid,
-            email: firebaseUser.email,
+            email: firebaseUser.email || '',
             displayName: firebaseUser.displayName || 'User',
             role: isDefaultAdmin ? 'admin' : 'user',
             blocked: false,
@@ -177,6 +192,7 @@ export default function App() {
           };
           await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
           setUser(newProfile);
+          setView(prev => prev === 'login' ? 'home' : prev);
         }
       } else {
         setUser(null);
@@ -194,17 +210,20 @@ export default function App() {
       setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
     }, (err) => handleFirestoreError(err, OperationType.GET, 'products'));
 
+    return () => unsubProducts();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
     const unsubPayments = onSnapshot(doc(db, 'config', 'payments'), (doc) => {
       if (doc.exists()) {
         setPaymentSettings(doc.data() as any);
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, 'config/payments'));
 
-    return () => {
-      unsubProducts();
-      unsubPayments();
-    };
-  }, []);
+    return () => unsubPayments();
+  }, [user]);
 
   // --- Real-time Data ---
   useEffect(() => {
@@ -218,7 +237,10 @@ export default function App() {
     );
     const unsubOrders = onSnapshot(ordersQuery, (snapshot) => {
       setOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'orders');
+      showToast('Failed to load orders.');
+    });
 
     // Admin Data
     let unsubAllOrders: () => void;
@@ -237,6 +259,11 @@ export default function App() {
       });
 
       const supportQuery = query(collection(db, 'support_messages'), orderBy('createdAt', 'desc'));
+      unsubSupport = onSnapshot(supportQuery, (snapshot) => {
+        setSupportMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+    } else {
+      const supportQuery = query(collection(db, 'support_messages'), where('userId', '==', user.uid), orderBy('createdAt', 'desc'));
       unsubSupport = onSnapshot(supportQuery, (snapshot) => {
         setSupportMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       });
@@ -278,47 +305,10 @@ export default function App() {
   const handleGmailLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
+      setView('home');
     } catch (error) {
       console.error('Login failed:', error);
-      alert('Login failed. Please try again.');
-    }
-  };
-
-  const handleEmailSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.endsWith('@gmail.com')) {
-      alert('Only @gmail.com addresses are allowed.');
-      return;
-    }
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      // Immediately update profile
-      await updateProfile(userCredential.user, { displayName: name });
-      
-      // Manually create the user profile in Firestore to ensure 'name' is used
-      const isDefaultAdmin = email === 'robbanybagha805@gmail.com';
-      const newProfile: UserProfile = {
-        uid: userCredential.user.uid,
-        email: email,
-        displayName: name || 'User',
-        role: isDefaultAdmin ? 'admin' : 'user',
-        blocked: false,
-        createdAt: serverTimestamp()
-      };
-      await setDoc(doc(db, 'users', userCredential.user.uid), newProfile);
-      setUser(newProfile);
-      setView('home');
-    } catch (error: any) {
-      alert(error.message);
-    }
-  };
-
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (error: any) {
-      alert(error.message);
+      showToast('Login failed. Please try again.');
     }
   };
 
@@ -336,31 +326,7 @@ export default function App() {
     );
   }, [products, searchQuery]);
 
-  const addToCart = (product: Product) => {
-    setCart(prev => {
-      const existing = prev.find(item => item.id === product.id);
-      if (existing) {
-        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
-      }
-      return [...prev, { ...product, quantity: 1 }];
-    });
-  };
-
-  const removeFromCart = (id: string) => {
-    setCart(prev => prev.filter(item => item.id !== id));
-  };
-
-  const updateQuantity = (id: string, delta: number) => {
-    setCart(prev => prev.map(item => {
-      if (item.id === id) {
-        const newQty = Math.max(1, item.quantity + delta);
-        return { ...item, quantity: newQty };
-      }
-      return item;
-    }));
-  };
-
-  const totalPrice = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const totalPrice = selectedProduct?.price || 0;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -370,7 +336,7 @@ export default function App() {
 
   // --- Components ---
 
-  const LoginSignup = () => (
+  const renderAuthView = () => (
     <div className="min-h-screen flex items-center justify-center p-4 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-900 via-slate-950 to-black">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -379,82 +345,21 @@ export default function App() {
       >
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">Nexus Digital</h1>
-          <p className="text-blue-200/60">{authMode === 'login' ? 'Welcome Back' : 'Create Account'}</p>
+          <p className="text-blue-200/60">Sign in to continue</p>
         </div>
         
-        <form onSubmit={authMode === 'login' ? handleEmailLogin : handleEmailSignup} className="space-y-4 mb-6">
-          {authMode === 'signup' && (
-            <div>
-              <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Full Name</label>
-              <input 
-                type="text" 
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                placeholder="Your Name"
-              />
-            </div>
-          )}
-          <div>
-            <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Gmail Address</label>
-            <input 
-              type="email" 
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="example@gmail.com"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Password</label>
-            <input 
-              type="password" 
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="••••••••"
-            />
-          </div>
-          <button 
-            type="submit"
-            className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all shadow-lg shadow-blue-600/20 active:scale-95"
-          >
-            {authMode === 'login' ? 'Sign In' : 'Sign Up'}
-          </button>
-        </form>
-
-        <div className="relative mb-6">
-          <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
-          <div className="relative flex justify-center text-xs uppercase"><span className="bg-slate-950 px-2 text-blue-200/20 font-bold">Or continue with</span></div>
-        </div>
-
         <button 
           onClick={handleGmailLogin}
           className="w-full py-3 rounded-xl bg-white text-slate-900 font-bold flex items-center justify-center gap-3 hover:bg-slate-100 transition-all active:scale-95 shadow-xl"
         >
           <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-          Google
+          Continue with Google
         </button>
-
-        <div className="mt-8 text-center">
-          <p className="text-blue-200/40 text-sm">
-            {authMode === 'login' ? "Don't have an account?" : "Already have an account?"}
-            <button 
-              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-              className="ml-2 text-blue-400 font-bold hover:underline"
-            >
-              {authMode === 'login' ? 'Sign Up' : 'Sign In'}
-            </button>
-          </p>
-        </div>
       </motion.div>
     </div>
   );
 
-  const Homepage = () => (
+  const renderHomepage = () => (
     <div className="pb-24 pt-6 px-4 max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
         <div>
@@ -499,14 +404,7 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 gap-2">
                 <button 
-                  onClick={() => addToCart(product)}
-                  className="flex items-center justify-center gap-2 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-[10px] font-medium transition-all border border-white/5"
-                >
-                  <ShoppingCart size={14} />
-                  Add
-                </button>
-                <button 
-                  onClick={() => { addToCart(product); setView('cart'); }}
+                  onClick={() => { setSelectedProduct(product); setView('payment'); }}
                   className="py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-all shadow-lg shadow-blue-600/20"
                 >
                   Order Now
@@ -519,78 +417,52 @@ export default function App() {
     </div>
   );
 
-  const CartPage = () => (
-    <div className="pb-24 pt-6 px-4 max-w-3xl mx-auto">
-      <h2 className="text-3xl font-bold text-white mb-8 tracking-tight flex items-center gap-3">
-        <ShoppingCart className="text-blue-500" /> Your Cart
-      </h2>
-      
-      {cart.length === 0 ? (
-        <div className="text-center py-20 bg-white/5 rounded-3xl border border-dashed border-white/10">
-          <ShoppingCart size={64} className="mx-auto text-blue-200/10 mb-4" />
-          <p className="text-blue-200/40 text-lg">Your cart is empty</p>
+  const renderPaymentPage = () => {
+    if (!selectedProduct) {
+      return (
+        <div className="pb-24 pt-6 px-4 max-w-xl mx-auto text-center">
+          <p className="text-blue-200/40 text-lg mb-4">No product selected.</p>
           <button 
             onClick={() => setView('home')}
-            className="mt-6 px-8 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all"
+            className="px-8 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all"
           >
-            Start Shopping
+            Go Back
           </button>
         </div>
-      ) : (
-        <div className="space-y-4">
-          {cart.map((item) => (
-            <div key={item.id} className="flex items-center gap-4 p-4 rounded-2xl bg-white/5 border border-white/10">
-              <img src={item.image} alt={item.name} className="w-20 h-20 rounded-xl object-cover" referrerPolicy="no-referrer" />
-              <div className="flex-1">
-                <h4 className="text-white font-bold">{item.name}</h4>
-                <p className="text-blue-400 font-bold">৳{item.price}</p>
-              </div>
-              <div className="flex items-center gap-3 bg-black/20 rounded-lg p-1">
-                <button onClick={() => updateQuantity(item.id, -1)} className="p-1 hover:text-blue-400 text-white/60"><Minus size={16} /></button>
-                <span className="text-white font-medium w-6 text-center">{item.quantity}</span>
-                <button onClick={() => updateQuantity(item.id, 1)} className="p-1 hover:text-blue-400 text-white/60"><Plus size={16} /></button>
-              </div>
-              <button onClick={() => removeFromCart(item.id)} className="p-2 text-red-400/60 hover:text-red-400 transition-colors">
-                <Trash2 size={20} />
-              </button>
-            </div>
-          ))}
-          
-          <div className="mt-8 p-6 rounded-3xl bg-blue-600/10 border border-blue-500/20">
-            <div className="flex justify-between items-center mb-6">
-              <span className="text-blue-200/60 font-medium">Total Amount</span>
-              <span className="text-3xl font-bold text-white">৳{totalPrice}</span>
-            </div>
-            <button 
-              onClick={() => setView('payment')}
-              className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-lg transition-all flex items-center justify-center gap-2"
-            >
-              Proceed to Checkout <ArrowRight size={20} />
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+      );
+    }
 
-  const PaymentPage = () => (
-    <div className="pb-24 pt-6 px-4 max-w-xl mx-auto">
-      <h2 className="text-3xl font-bold text-white mb-8 tracking-tight">Secure Payment</h2>
-      
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 gap-4">
+    return (
+      <div className="pb-24 pt-6 px-4 max-w-xl mx-auto">
+        <div className="flex items-center gap-4 mb-8">
+          <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+            <ArrowRight className="rotate-180" size={20} />
+          </button>
+          <h2 className="text-3xl font-bold text-white tracking-tight">Secure Payment</h2>
+        </div>
+        
+        <div className="space-y-6">
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-4">
+            <img src={selectedProduct.image} alt={selectedProduct.name} className="w-16 h-16 rounded-xl object-cover" referrerPolicy="no-referrer" />
+            <div>
+              <h4 className="text-white font-bold">{selectedProduct.name}</h4>
+              <p className="text-blue-400 font-bold">৳{selectedProduct.price}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
           <button 
             onClick={() => setPaymentMethod('bKash')}
             className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${paymentMethod === 'bKash' ? 'bg-pink-600/20 border-pink-500 text-white' : 'bg-white/5 border-white/10 text-white/40'}`}
           >
-            <div className="w-12 h-12 bg-pink-600 rounded-full flex items-center justify-center font-bold text-white">b</div>
+            <img src="https://i.ibb.co/q3YTcmPs/332c2060c5.jpg" alt="bKash" className="w-16 h-16 rounded-full object-cover" referrerPolicy="no-referrer" />
             bKash
           </button>
           <button 
             onClick={() => setPaymentMethod('Nagad')}
             className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${paymentMethod === 'Nagad' ? 'bg-orange-600/20 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-white/40'}`}
           >
-            <div className="w-12 h-12 bg-orange-600 rounded-full flex items-center justify-center font-bold text-white">N</div>
+            <img src="https://i.ibb.co/Zzjzc6J8/f50dbb811b.jpg" alt="Nagad" className="w-16 h-16 rounded-full object-cover" referrerPolicy="no-referrer" />
             Nagad
           </button>
         </div>
@@ -634,7 +506,7 @@ export default function App() {
             const orderData = {
               userId: user.uid,
               userEmail: user.email,
-              items: [...cart],
+              items: [{ ...selectedProduct, quantity: 1 }],
               total: totalPrice,
               paymentMethod: paymentMethod,
               transactionId: transactionId,
@@ -644,9 +516,9 @@ export default function App() {
 
             try {
               await addDoc(collection(db, 'orders'), orderData);
-              alert('Order Placed Successfully! Please wait for admin confirmation.'); 
+              showToast('Order Placed Successfully! Please wait for admin confirmation.'); 
               setView('orders'); 
-              setCart([]); 
+              setSelectedProduct(null); 
               setTransactionId('');
             } catch (err) {
               handleFirestoreError(err, OperationType.CREATE, 'orders');
@@ -663,34 +535,37 @@ export default function App() {
       </div>
     </div>
   );
+  };
 
-  const SupportPage = () => {
-    const [msg, setMsg] = useState('');
-    const [sending, setSending] = useState(false);
-
+  const renderSupportPage = () => {
     const handleSend = async () => {
-      if (!msg.trim()) return;
-      setSending(true);
+      if (!supportMsg.trim()) return;
+      setSupportSending(true);
       try {
         await addDoc(collection(db, 'support_messages'), {
           userId: user?.uid,
           userEmail: user?.email,
-          message: msg,
+          message: supportMsg,
           status: 'unread',
           createdAt: serverTimestamp()
         });
-        setMsg('');
-        alert('Message sent! We will contact you soon.');
+        setSupportMsg('');
+        showToast('Message sent! We will contact you soon.');
       } catch (err) {
-        alert('Failed to send message.');
+        showToast('Failed to send message.');
       } finally {
-        setSending(false);
+        setSupportSending(false);
       }
     };
 
     return (
       <div className="pb-24 pt-6 px-4 max-w-xl mx-auto">
-        <h2 className="text-3xl font-bold text-white mb-8 tracking-tight">Customer Support</h2>
+        <div className="flex items-center gap-4 mb-8">
+          <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+            <ArrowRight className="rotate-180" size={20} />
+          </button>
+          <h2 className="text-3xl font-bold text-white tracking-tight">Customer Support</h2>
+        </div>
         <div className="space-y-6">
           <div className="p-8 rounded-3xl bg-white/5 border border-white/10 text-center">
             <Headphones size={48} className="mx-auto text-blue-500 mb-4" />
@@ -699,20 +574,42 @@ export default function App() {
             
             <div className="space-y-4 text-left">
               <textarea 
-                value={msg}
-                onChange={(e) => setMsg(e.target.value)}
+                value={supportMsg}
+                onChange={(e) => setSupportMsg(e.target.value)}
                 placeholder="Type your message here..."
                 className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-32 resize-none"
               />
               <button 
                 onClick={handleSend}
-                disabled={sending}
+                disabled={supportSending}
                 className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                {sending ? 'Sending...' : 'Send Message'}
+                {supportSending ? 'Sending...' : 'Send Message'}
               </button>
             </div>
           </div>
+
+          {supportMessages.length > 0 && (
+            <div className="space-y-4">
+              <h4 className="text-white font-bold">Your Messages</h4>
+              {supportMessages.map(msg => (
+                <div key={msg.id} className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <p className="text-white text-sm">{msg.message}</p>
+                    <span className={`text-[10px] px-2 py-1 rounded-full font-bold uppercase ${msg.status === 'read' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                      {msg.status}
+                    </span>
+                  </div>
+                  {msg.reply && (
+                    <div className="p-3 rounded-xl bg-blue-600/10 border border-blue-500/20 mt-2">
+                      <p className="text-xs font-bold text-blue-400 mb-1">Admin Reply:</p>
+                      <p className="text-blue-100/80 text-sm">{msg.reply}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           
           <div className="space-y-4">
             <h4 className="text-white font-bold">Common Questions</h4>
@@ -732,11 +629,16 @@ export default function App() {
     );
   };
 
-  const OrdersPage = () => (
+  const renderOrdersPage = () => (
     <div className="pb-24 pt-6 px-4 max-w-3xl mx-auto">
-      <h2 className="text-3xl font-bold text-white mb-8 tracking-tight flex items-center gap-3">
-        <CreditCard className="text-blue-500" /> Order History
-      </h2>
+      <div className="flex items-center gap-4 mb-8">
+        <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+          <ArrowRight className="rotate-180" size={20} />
+        </button>
+        <h2 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
+          <CreditCard className="text-blue-500" /> Order History
+        </h2>
+      </div>
       
       {orders.length === 0 ? (
         <div className="text-center py-20 bg-white/5 rounded-3xl border border-dashed border-white/10">
@@ -845,10 +747,10 @@ export default function App() {
     </div>
   );
 
-  const AdminPanel = () => {
+  const renderAdminPanel = () => {
     const pendingOrdersCount = allOrders.filter(o => o.status === 'pending').length;
 
-    const Dashboard = () => (
+    const renderDashboard = () => (
       <div className="space-y-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           <button 
@@ -939,7 +841,7 @@ export default function App() {
       </div>
     );
 
-    const ProductFormView = ({ isEdit = false }: { isEdit?: boolean }) => (
+    const renderProductFormView = ({ isEdit = false }: { isEdit?: boolean }) => (
       <div className="max-w-2xl mx-auto">
         <button 
           onClick={() => {
@@ -1035,7 +937,7 @@ export default function App() {
       </div>
     );
 
-    const UsersView = () => (
+    const renderUsersView = () => (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <button 
@@ -1109,7 +1011,7 @@ export default function App() {
       </div>
     );
 
-    const OrdersView = () => {
+    const renderOrdersView = () => {
       const filteredOrders = orderFilter === 'all' ? allOrders : allOrders.filter(o => o.status === 'pending');
       
       return (
@@ -1216,7 +1118,7 @@ export default function App() {
       );
     };
 
-    const ProductsView = () => (
+    const renderProductsView = () => (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <button 
@@ -1252,15 +1154,7 @@ export default function App() {
                     <Settings size={16} />
                   </button>
                   <button 
-                    onClick={async () => {
-                      if (confirm(`Delete ${p.name}?`)) {
-                        try {
-                          await deleteDoc(doc(db, 'products', p.id!));
-                        } catch (err) {
-                          alert('Failed to delete product.');
-                        }
-                      }
-                    }}
+                    onClick={() => setDeletingProduct(p)}
                     className="p-2 rounded-xl bg-red-600 text-white shadow-lg hover:bg-red-500 transition-all"
                   >
                     <Trash2 size={16} />
@@ -1277,7 +1171,7 @@ export default function App() {
       </div>
     );
 
-    const SupportView = () => (
+    const renderSupportView = () => (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <button 
@@ -1302,21 +1196,73 @@ export default function App() {
                     <p className="text-[10px] text-blue-200/40">{m.createdAt?.toDate().toLocaleString()}</p>
                   </div>
                   <button 
-                    onClick={async () => {
-                      if (confirm('Delete this message?')) {
-                        try {
-                          await deleteDoc(doc(db, 'support_messages', m.id));
-                        } catch (err) {
-                          alert('Failed to delete message.');
-                        }
-                      }
-                    }}
+                    onClick={() => setDeletingMessage(m)}
                     className="p-2 rounded-lg bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-all"
                   >
                     <Trash2 size={16} />
                   </button>
                 </div>
                 <p className="text-blue-200/60 text-sm bg-white/5 p-4 rounded-2xl border border-white/5 leading-relaxed">{m.message}</p>
+                {m.reply ? (
+                  <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/20">
+                    <p className="text-xs font-bold text-blue-400 mb-1">Your Reply:</p>
+                    <p className="text-blue-100/80 text-sm">{m.reply}</p>
+                  </div>
+                ) : (
+                  <div className="mt-4">
+                    {replyingTo === m.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          placeholder="Type your reply..."
+                          className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-24 resize-none text-sm"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={async () => {
+                              if (!replyText.trim()) return;
+                              try {
+                                await updateDoc(doc(db, 'support_messages', m.id), {
+                                  reply: replyText,
+                                  status: 'read',
+                                  repliedAt: serverTimestamp()
+                                });
+                                setReplyingTo(null);
+                                setReplyText('');
+                                showToast('Reply sent successfully!');
+                              } catch (err) {
+                                showToast('Failed to send reply.');
+                              }
+                            }}
+                            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all"
+                          >
+                            Send Reply
+                          </button>
+                          <button
+                            onClick={() => {
+                              setReplyingTo(null);
+                              setReplyText('');
+                            }}
+                            className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-bold transition-all"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setReplyingTo(m.id);
+                          setReplyText('');
+                        }}
+                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-bold transition-all flex items-center gap-2"
+                      >
+                        <MessageSquare size={14} /> Reply
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -1324,22 +1270,13 @@ export default function App() {
       </div>
     );
 
-    const PaymentSettingsView = () => {
-      const [bkashNum, setBkashNum] = useState(paymentSettings.bKash);
-      const [nagadNum, setNagadNum] = useState(paymentSettings.Nagad);
-      const [saving, setSaving] = useState(false);
-
-      useEffect(() => {
-        setBkashNum(paymentSettings.bKash);
-        setNagadNum(paymentSettings.Nagad);
-      }, [paymentSettings]);
-
+    const renderPaymentSettingsView = () => {
       const handleSave = async () => {
         if (!bkashNum || !nagadNum) {
-          alert('Both numbers are required!');
+          showToast('Both numbers are required!');
           return;
         }
-        setSaving(true);
+        setSavingPaymentSettings(true);
         try {
           console.log('Attempting to save payment settings:', { bKash: bkashNum, Nagad: nagadNum });
           const docRef = doc(db, 'config', 'payments');
@@ -1349,14 +1286,14 @@ export default function App() {
           }, { merge: true });
           
           console.log('Payment settings saved successfully');
-          alert('Payment numbers updated successfully!');
+          showToast('Payment numbers updated successfully!');
           setAdminSubView('dashboard');
         } catch (err: any) {
           console.error('Failed to update payment numbers:', err);
           handleFirestoreError(err, OperationType.WRITE, 'config/payments');
-          alert('Failed to update payment numbers: ' + (err.message || 'Unknown error'));
+          showToast('Failed to update payment numbers: ' + (err.message || 'Unknown error'));
         } finally {
-          setSaving(false);
+          setSavingPaymentSettings(false);
         }
       };
 
@@ -1393,10 +1330,10 @@ export default function App() {
               </div>
               <button 
                 onClick={handleSave}
-                disabled={saving}
+                disabled={savingPaymentSettings}
                 className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all disabled:opacity-50"
               >
-                {saving ? 'Saving...' : 'Save Changes'}
+                {savingPaymentSettings ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>
@@ -1407,9 +1344,14 @@ export default function App() {
     return (
       <div className="pb-24 pt-6 px-4 max-w-6xl mx-auto space-y-8">
         <div className="flex items-center justify-between">
-          <h2 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
-            <ShieldCheck className="text-blue-500" /> Admin Panel
-          </h2>
+          <div className="flex items-center gap-4">
+            <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+              <ArrowRight className="rotate-180" size={20} />
+            </button>
+            <h2 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
+              <ShieldCheck className="text-blue-500" /> Admin Panel
+            </h2>
+          </div>
           {adminSubView !== 'dashboard' && (
             <button 
               onClick={() => setAdminSubView('dashboard')}
@@ -1428,14 +1370,14 @@ export default function App() {
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {adminSubView === 'dashboard' && <Dashboard />}
-            {adminSubView === 'users' && <UsersView />}
-            {adminSubView === 'orders' && <OrdersView />}
-            {adminSubView === 'products' && <ProductsView />}
-            {adminSubView === 'support' && <SupportView />}
-            {adminSubView === 'add-product' && <ProductFormView />}
-            {adminSubView === 'edit-product' && <ProductFormView isEdit />}
-            {adminSubView === 'payment-settings' && <PaymentSettingsView />}
+            {adminSubView === 'dashboard' && renderDashboard()}
+            {adminSubView === 'users' && renderUsersView()}
+            {adminSubView === 'orders' && renderOrdersView()}
+            {adminSubView === 'products' && renderProductsView()}
+            {adminSubView === 'support' && renderSupportView()}
+            {adminSubView === 'add-product' && renderProductFormView({})}
+            {adminSubView === 'edit-product' && renderProductFormView({ isEdit: true })}
+            {adminSubView === 'payment-settings' && renderPaymentSettingsView()}
           </motion.div>
         </AnimatePresence>
 
@@ -1536,7 +1478,7 @@ export default function App() {
     );
   }
 
-  if (!user) return <LoginSignup />;
+  if (!user) return renderAuthView();
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
@@ -1567,6 +1509,108 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Delete Message Modal */}
+      <AnimatePresence>
+        {deletingMessage && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-3xl p-8 space-y-6"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold text-white">Delete Message</h3>
+                <button onClick={() => setDeletingMessage(null)} className="text-blue-200/40 hover:text-white">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <p className="text-sm text-blue-200/60">Are you sure you want to delete this message from <span className="text-white font-bold">{deletingMessage.userEmail}</span>?</p>
+                <p className="text-xs text-red-400/60 bg-red-400/5 p-3 rounded-xl border border-red-400/10">This action cannot be undone.</p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button 
+                  onClick={() => setDeletingMessage(null)}
+                  className="flex-1 py-3 rounded-xl bg-white/5 text-white font-bold hover:bg-white/10 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={async () => {
+                    try {
+                      await deleteDoc(doc(db, 'support_messages', deletingMessage.id));
+                      setDeletingMessage(null);
+                      showToast('Message deleted successfully!');
+                    } catch (err: any) {
+                      console.error('Delete error:', err);
+                      handleFirestoreError(err, OperationType.DELETE, `support_messages/${deletingMessage.id}`);
+                      showToast('Failed to delete message.');
+                    }
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-500 transition-all shadow-lg shadow-red-600/20 active:scale-95"
+                >
+                  Delete Message
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Product Modal */}
+      <AnimatePresence>
+        {deletingProduct && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-3xl p-8 space-y-6"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold text-white">Delete Product</h3>
+                <button onClick={() => setDeletingProduct(null)} className="text-blue-200/40 hover:text-white">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <p className="text-sm text-blue-200/60">Are you sure you want to delete <span className="text-white font-bold">{deletingProduct.name}</span>?</p>
+                <p className="text-xs text-red-400/60 bg-red-400/5 p-3 rounded-xl border border-red-400/10">This action cannot be undone.</p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button 
+                  onClick={() => setDeletingProduct(null)}
+                  className="flex-1 py-3 rounded-xl bg-white/5 text-white font-bold hover:bg-white/10 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={async () => {
+                    try {
+                      await deleteDoc(doc(db, 'products', deletingProduct.id!));
+                      showToast('Product Deleted Successfully!');
+                      setDeletingProduct(null);
+                    } catch (err: any) {
+                      console.error('Delete error:', err);
+                      handleFirestoreError(err, OperationType.DELETE, `products/${deletingProduct.id}`);
+                      showToast('Failed to delete product: ' + (err.message || 'Unknown error'));
+                    }
+                  }}
+                  className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-500 transition-all shadow-lg shadow-red-600/20 active:scale-95"
+                >
+                  Delete Product
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Cancel Order Modal */}
       <AnimatePresence>
@@ -1739,12 +1783,11 @@ export default function App() {
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {view === 'home' && <Homepage />}
-            {view === 'cart' && <CartPage />}
-            {view === 'payment' && <PaymentPage />}
-            {view === 'support' && <SupportPage />}
-            {view === 'orders' && <OrdersPage />}
-            {view === 'admin' && user.role === 'admin' && <AdminPanel />}
+            {view === 'home' && renderHomepage()}
+            {view === 'payment' && renderPaymentPage()}
+            {view === 'support' && renderSupportPage()}
+            {view === 'orders' && renderOrdersPage()}
+            {view === 'admin' && user.role === 'admin' && renderAdminPanel()}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -1765,21 +1808,6 @@ export default function App() {
                 onClick={() => setView('home')} 
                 icon={<Home size={20} />} 
                 label="Home" 
-              />
-              <NavButton 
-                active={view === 'cart'} 
-                onClick={() => setView('cart')} 
-                icon={
-                  <div className="relative">
-                    <ShoppingCart size={20} />
-                    {cart.length > 0 && (
-                      <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-600 text-white text-[8px] font-bold rounded-full flex items-center justify-center border border-slate-900">
-                        {cart.length}
-                      </span>
-                    )}
-                  </div>
-                } 
-                label="Cart" 
               />
               <NavButton 
                 active={view === 'support'} 
