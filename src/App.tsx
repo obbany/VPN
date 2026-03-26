@@ -127,6 +127,7 @@ export default function App() {
   const [supportMessages, setSupportMessages] = useState<any[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
   const [transactionId, setTransactionId] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'bKash' | 'Nagad'>('bKash');
@@ -635,18 +636,36 @@ export default function App() {
     </div>
   );
 
-  const renderUsersView = () => (
+  const renderUsersView = () => {
+    const filteredUsers = allUsers.filter(u => 
+      u.email.toLowerCase().includes(userSearchQuery.toLowerCase()) ||
+      u.displayName.toLowerCase().includes(userSearchQuery.toLowerCase())
+    );
+
+    return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <button 
           onClick={() => setAdminSubView('dashboard')}
-          className="text-blue-400 flex items-center gap-2 hover:text-blue-300 transition-all"
+          className="text-blue-400 flex items-center gap-2 hover:text-blue-300 transition-all w-fit"
         >
           <ArrowRight className="rotate-180" size={16} /> Back
         </button>
-        <h3 className="text-xl font-bold text-white flex items-center gap-2">
-          <Users size={20} className="text-blue-400" /> User Directory
-        </h3>
+        <div className="flex flex-col md:flex-row items-center gap-4">
+          <div className="relative group w-full md:w-80">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-200/40 group-focus-within:text-blue-400 transition-colors" size={16} />
+            <input 
+              type="text"
+              value={userSearchQuery}
+              onChange={(e) => setUserSearchQuery(e.target.value)}
+              placeholder="Search by email or name..."
+              className="w-full pl-12 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            />
+          </div>
+          <h3 className="text-xl font-bold text-white flex items-center gap-2">
+            <Users size={20} className="text-blue-400" /> User Directory
+          </h3>
+        </div>
       </div>
       <div className="overflow-x-auto rounded-3xl border border-white/10 bg-white/5">
         <table className="w-full text-left text-sm">
@@ -659,56 +678,65 @@ export default function App() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {allUsers.map((u) => (
-              <tr key={u.uid} className="hover:bg-white/5 transition-colors">
-                <td className="px-6 py-4">
-                  <p className="text-white font-bold">{u.displayName}</p>
-                  <p className="text-blue-200/40 text-xs">{u.email}</p>
-                </td>
-                <td className="px-6 py-4">
-                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${u.role === 'admin' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                    {u.role}
-                  </span>
-                </td>
-                <td className="px-6 py-4">
-                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${u.blocked ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                    {u.blocked ? 'Blocked' : 'Active'}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-right space-x-2">
-                  <button 
-                    onClick={() => {
-                      setEditingUser(u);
-                      setEditName(u.displayName);
-                      setEditEmail(u.email);
-                    }}
-                    className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-white transition-all"
-                  >
-                    <Settings size={14} />
-                  </button>
-                  <button 
-                    onClick={async () => {
-                      if (u.email === 'robbanybagha805@gmail.com' || u.email === 'brothersonfire208@gmail.com') return;
-                      try {
-                        await updateDoc(doc(db, 'users', u.uid), { blocked: !u.blocked });
-                        showToast('User status updated!');
-                      } catch (err) {
-                        showToast('Failed to update status.');
-                      }
-                    }}
-                    className={`p-2 rounded-lg transition-all ${u.blocked ? 'bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20' : 'bg-red-600/10 text-red-400 hover:bg-red-600/20'}`}
-                    title={u.blocked ? 'Unblock User' : 'Block User'}
-                  >
-                    {u.blocked ? <Check size={14} /> : <X size={14} />}
-                  </button>
+            {filteredUsers.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-6 py-20 text-center text-blue-200/20">
+                  No users found matching your search
                 </td>
               </tr>
-            ))}
+            ) : (
+              filteredUsers.map((u) => (
+                <tr key={u.uid} className="hover:bg-white/5 transition-colors">
+                  <td className="px-6 py-4">
+                    <p className="text-white font-bold">{u.displayName}</p>
+                    <p className="text-blue-200/40 text-xs">{u.email}</p>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${u.role === 'admin' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                      {u.role}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${u.blocked ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                      {u.blocked ? 'Blocked' : 'Active'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right space-x-2">
+                    <button 
+                      onClick={() => {
+                        setEditingUser(u);
+                        setEditName(u.displayName);
+                        setEditEmail(u.email);
+                      }}
+                      className="p-2 rounded-lg bg-white/5 text-white/40 hover:text-white transition-all"
+                    >
+                      <Settings size={14} />
+                    </button>
+                    <button 
+                      onClick={async () => {
+                        if (u.email === 'robbanybagha805@gmail.com' || u.email === 'brothersonfire208@gmail.com') return;
+                        try {
+                          await updateDoc(doc(db, 'users', u.uid), { blocked: !u.blocked });
+                          showToast('User status updated!');
+                        } catch (err) {
+                          showToast('Failed to update status.');
+                        }
+                      }}
+                      className={`p-2 rounded-lg transition-all ${u.blocked ? 'bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20' : 'bg-red-600/10 text-red-400 hover:bg-red-600/20'}`}
+                      title={u.blocked ? 'Unblock User' : 'Block User'}
+                    >
+                      {u.blocked ? <Check size={14} /> : <X size={14} />}
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
     </div>
   );
+  };
 
   const renderOrdersView = () => {
     const filteredOrders = orderFilter === 'all' ? allOrders : allOrders.filter(o => o.status === 'pending');
