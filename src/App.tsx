@@ -85,6 +85,7 @@ interface Order {
   paymentMethod: string;
   transactionId: string;
   pinned?: boolean;
+  expiryDate?: string;
   credentials?: { [productId: string]: string | { email?: string, pass?: string, key?: string } | any[] };
 }
 
@@ -107,6 +108,7 @@ interface InventoryItem {
   password?: string;
   key?: string;
   isUsed: boolean;
+  expiryDays?: number;
   assignedToOrderId?: string;
   createdAt: any;
 }
@@ -152,6 +154,7 @@ export default function App() {
   const [newInventoryEmail, setNewInventoryEmail] = useState('');
   const [newInventoryPass, setNewInventoryPass] = useState('');
   const [newInventoryKey, setNewInventoryKey] = useState('');
+  const [newInventoryExpiryDays, setNewInventoryExpiryDays] = useState('30');
   const [deletingInventoryId, setDeletingInventoryId] = useState<string | null>(null);
 
   const [cancellingOrder, setCancellingOrder] = useState<Order | null>(null);
@@ -336,6 +339,33 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [adminSubView]);
 
+  // Cleanup expired orders
+  useEffect(() => {
+    if (!user || user.role !== 'admin' || allOrders.length === 0) return;
+
+    const cleanupExpiredOrders = async () => {
+      const now = new Date();
+      const expiredOrders = allOrders.filter(o => {
+        if (!o.expiryDate) return false;
+        return new Date(o.expiryDate) < now;
+      });
+
+      if (expiredOrders.length > 0) {
+        const batch = writeBatch(db);
+        expiredOrders.forEach(o => {
+          batch.delete(doc(db, 'orders', o.id));
+        });
+        try {
+          await batch.commit();
+        } catch (err) {
+          console.error('Failed to cleanup expired orders:', err);
+        }
+      }
+    };
+
+    cleanupExpiredOrders();
+  }, [user, allOrders.length]);
+
   useEffect(() => {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
@@ -392,6 +422,7 @@ export default function App() {
       const credentials: { [key: string]: any } = {};
       const updates: Promise<void>[] = [];
       const inventoryUpdates: { id: string, data: any }[] = [];
+      let maxExpiryDays = 30;
 
       for (const item of order.items) {
         // Find available inventory for this product
@@ -406,6 +437,9 @@ export default function App() {
         const itemCredentials = [];
         for (let i = 0; i < item.quantity; i++) {
           const invItem = availableItems[i];
+          if (invItem.expiryDays && invItem.expiryDays > 0) {
+            maxExpiryDays = Math.max(maxExpiryDays, invItem.expiryDays);
+          }
           itemCredentials.push({ email: invItem.email, pass: invItem.password, key: invItem.key });
           inventoryUpdates.push({
             id: invItem.id,
@@ -415,6 +449,10 @@ export default function App() {
         credentials[item.id] = itemCredentials;
       }
 
+      // Calculate expiry date
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + maxExpiryDays);
+
       // Update inventory items
       for (const update of inventoryUpdates) {
         updates.push(updateDoc(doc(db, 'inventory', update.id), update.data));
@@ -423,7 +461,8 @@ export default function App() {
       // Update order
       updates.push(updateDoc(doc(db, 'orders', order.id), {
         status: 'confirmed',
-        credentials
+        credentials,
+        expiryDate: expiryDate.toISOString()
       }));
 
       await Promise.all(updates);
@@ -782,6 +821,11 @@ export default function App() {
                     <p className="text-[10px] font-mono text-blue-200/40 mb-1">{order.id}</p>
                     <p className="text-white font-bold">{order.userEmail}</p>
                     <p className="text-[10px] text-blue-200/30">{order.createdAt?.toDate().toLocaleString()}</p>
+                    {order.expiryDate && (
+                      <p className="text-[10px] text-red-400 font-bold mt-1">
+                        Expires: {new Date(order.expiryDate).toLocaleString()}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${
@@ -1447,8 +1491,14 @@ export default function App() {
   };
 
   const renderOrdersPage = () => {
-    const pinnedOrders = orders.filter(o => o.pinned);
-    const unpinnedOrders = orders.filter(o => !o.pinned);
+    const activeOrders = orders.filter(o => {
+      if (!o.expiryDate) return true;
+      const expiry = new Date(o.expiryDate);
+      return expiry > new Date();
+    });
+
+    const pinnedOrders = activeOrders.filter(o => o.pinned);
+    const unpinnedOrders = activeOrders.filter(o => !o.pinned);
 
     const renderOrderCard = (order: Order) => (
       <div key={order.id} className={`p-6 rounded-3xl bg-white/5 border ${order.pinned ? 'border-blue-500/30' : 'border-white/10'} space-y-4 relative group`}>
@@ -1667,6 +1717,7 @@ export default function App() {
         email: newInventoryEmail,
         password: newInventoryPass,
         key: newInventoryKey || '',
+        expiryDays: Number(newInventoryExpiryDays) || 30,
         isUsed: false,
         createdAt: serverTimestamp()
       });
@@ -1674,6 +1725,7 @@ export default function App() {
       setNewInventoryEmail('');
       setNewInventoryPass('');
       setNewInventoryKey('');
+      setNewInventoryExpiryDays('30');
     } catch (err: any) {
       console.error('Add inventory error:', err);
       handleFirestoreError(err, OperationType.CREATE, 'inventory');
@@ -1765,6 +1817,18 @@ export default function App() {
                     placeholder="Activation Key"
                   />
                 </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-blue-200/40 uppercase tracking-widest">Expiry Days</label>
+                  <input
+                    type="number"
+                    value={newInventoryExpiryDays}
+                    onChange={(e) => setNewInventoryExpiryDays(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                    placeholder="30"
+                    required
+                  />
+                  <p className="text-[10px] text-blue-200/30">Order history will be deleted for user after these many days.</p>
+                </div>
                 <button
                   type="submit"
                   className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all flex items-center justify-center gap-2"
@@ -1807,6 +1871,7 @@ export default function App() {
                         <div className="flex items-center gap-3 text-xs text-blue-200/60 font-mono">
                           <span>{item.email}</span>
                           {item.key && <span>• {item.key}</span>}
+                          {item.expiryDays && <span>• {item.expiryDays} Days</span>}
                         </div>
                       </div>
                       <div className="flex items-center gap-4">
