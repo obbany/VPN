@@ -55,7 +55,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (request.auth.token.email == "robbanybagha805@gmail.com" ||
+        (('email' in request.auth.token && (request.auth.token.email == "robbanybagha805@gmail.com" || request.auth.token.email == "brothersonfire208@gmail.com")) ||
          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
     }
@@ -75,25 +75,36 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'email', 'role']) &&
              data.uid == request.auth.uid &&
+             ('email' in request.auth.token && data.email == request.auth.token.email) &&
              isValidEmail(data.email) &&
              data.role in ['admin', 'user'] &&
-             (!('blocked' in data) || data.blocked is bool);
+             (!('blocked' in data) || data.blocked is bool) &&
+             (!('displayName' in data) || data.displayName is string) &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
     function isValidProduct(data) {
       return data.keys().hasAll(['name', 'price', 'image']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.price is number && data.price >= 0 &&
-             isValidUrl(data.image);
+             isValidUrl(data.image) &&
+             (!('category' in data) || data.category is string) &&
+             (!('description' in data) || data.description is string) &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
     function isValidOrder(data) {
       return data.keys().hasAll(['userId', 'items', 'total', 'transactionId', 'status']) &&
              data.userId == request.auth.uid &&
+             (isAdmin() || ('email' in request.auth.token && data.userEmail == request.auth.token.email)) &&
              data.items is list &&
              data.total is number && data.total >= 0 &&
              data.transactionId is string && data.transactionId.size() >= 1 && data.transactionId.size() < 100 &&
-             data.status in ['pending', 'confirmed', 'cancelled'];
+             data.status in ['pending', 'confirmed', 'cancelled', 'out_of_stock'] &&
+             (!('userEmail' in data) || data.userEmail is string) &&
+             (!('paymentMethod' in data) || data.paymentMethod is string) &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('credentials' in data) || data.credentials is map);
     }
 
     function isValidPaymentConfig(data) {
@@ -102,9 +113,38 @@ service cloud.firestore {
              data.Nagad is string && data.Nagad.size() > 0 && data.Nagad.size() < 50;
     }
 
+    function isValidInventory(data) {
+      return data.keys().hasAll(['productId', 'email', 'password', 'key', 'isUsed']) &&
+             data.productId is string &&
+             data.email is string &&
+             data.password is string &&
+             data.key is string &&
+             data.isUsed is bool &&
+             (!('assignedToOrderId' in data) || data.assignedToOrderId is string) &&
+             (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidSupportMessage(data) {
+      return data.keys().hasAll(['userId', 'userEmail', 'message', 'status']) &&
+             (data.userId == request.auth.uid || isAdmin()) &&
+             (isAdmin() || ('email' in request.auth.token && data.userEmail == request.auth.token.email)) &&
+             isValidEmail(data.userEmail) &&
+             data.message is string && data.message.size() > 0 && data.message.size() < 2000 &&
+             data.status in ['unread', 'read'] &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('reply' in data) || data.reply is string) &&
+             (!('repliedAt' in data) || data.repliedAt is timestamp);
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
+
+    match /inventory/{inventoryId} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() && isValidInventory(request.resource.data);
+      allow delete: if isAdmin();
+    }
 
     match /config/payments {
       allow read: if isAuthenticated();
@@ -134,12 +174,8 @@ service cloud.firestore {
     match /support_messages/{messageId} {
       allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
       allow delete: if isAdmin();
-      allow create: if isAuthenticated() && 
-                      request.resource.data.userEmail == request.auth.token.email &&
-                      request.resource.data.message is string &&
-                      request.resource.data.message.size() > 0 &&
-                      request.resource.data.message.size() < 2000;
-      allow update: if isAdmin();
+      allow create: if isAuthenticated() && isValidSupportMessage(request.resource.data);
+      allow update: if isAdmin() && isValidSupportMessage(request.resource.data);
     }
   }
 }
