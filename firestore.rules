@@ -124,6 +124,13 @@ service cloud.firestore {
              (!('createdAt' in data) || data.createdAt is timestamp);
     }
 
+    function isValidOrderHistory(data) {
+      return data.keys().hasAll(['date', 'count', 'totalAmount']) &&
+             data.date is string && data.date.size() == 10 &&
+             data.count is int && data.count >= 0 &&
+             data.totalAmount is number && data.totalAmount >= 0;
+    }
+
     function isValidSupportMessage(data) {
       return data.keys().hasAll(['userId', 'userEmail', 'message', 'status']) &&
              (data.userId == request.auth.uid || isAdmin()) &&
@@ -139,6 +146,12 @@ service cloud.firestore {
     // ===============================================================
     // Rules
     // ===============================================================
+
+    match /order_history/{date} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() && isValidOrderHistory(request.resource.data);
+      allow delete: if isAdmin();
+    }
 
     match /inventory/{inventoryId} {
       allow read: if isAdmin();
@@ -168,7 +181,7 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
       allow create: if isAuthenticated() && isValidOrder(request.resource.data);
       allow update: if isAdmin();
-      allow delete: if false; // Orders should never be deleted
+      allow delete: if isAdmin();
     }
 
     match /support_messages/{messageId} {

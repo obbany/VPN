@@ -83,9 +83,24 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
       },
       "required": ["productId", "email", "password", "key", "isUsed"]
+    },
+    "OrderHistory": {
+      "title": "OrderHistory",
+      "description": "Daily order statistics",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "description": "Date string (YYYY-MM-DD)" },
+        "count": { "type": "integer", "description": "Number of orders on this date" },
+        "totalAmount": { "type": "number", "description": "Total revenue on this date" }
+      },
+      "required": ["date", "count", "totalAmount"]
     }
   },
   "firestore": {
+    "/order_history/{date}": {
+      "schema": "OrderHistory",
+      "description": "Daily order statistics"
+    },
     "/inventory/{inventoryId}": {
       "schema": "Inventory",
       "description": "VPN credentials inventory"

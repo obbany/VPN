@@ -54,7 +54,8 @@ import {
   deleteDoc,
   serverTimestamp,
   getDocs,
-  writeBatch
+  writeBatch,
+  increment
 } from 'firebase/firestore';
 
 // --- Types ---
@@ -113,6 +114,13 @@ interface InventoryItem {
   createdAt: any;
 }
 
+interface OrderHistory {
+  id: string;
+  date: string;
+  count: number;
+  totalAmount: number;
+}
+
 // --- App Component ---
 export default function App() {
   const [view, setView] = useState<View>(() => {
@@ -127,6 +135,7 @@ export default function App() {
   const pendingOrdersCount = useMemo(() => allOrders.filter(o => o.status === 'pending').length, [allOrders]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [supportMessages, setSupportMessages] = useState<any[]>([]);
+  const [orderHistory, setOrderHistory] = useState<OrderHistory[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -140,7 +149,7 @@ export default function App() {
   const [showNavbar, setShowNavbar] = useState(true);
   const lastScrollY = React.useRef(0);
   const [orderFilter, setOrderFilter] = useState<'all' | 'pending'>('all');
-  const [adminSubView, setAdminSubView] = useState<'dashboard' | 'users' | 'orders' | 'products' | 'support' | 'add-product' | 'edit-product' | 'payment-settings' | 'inventory'>(() => {
+  const [adminSubView, setAdminSubView] = useState<'dashboard' | 'users' | 'orders' | 'products' | 'support' | 'add-product' | 'edit-product' | 'payment-settings' | 'inventory' | 'history'>(() => {
     const saved = localStorage.getItem('nexus_admin_subview');
     return (saved as any) || 'dashboard';
   });
@@ -282,6 +291,7 @@ export default function App() {
     let unsubAllUsers: () => void;
     let unsubSupport: () => void;
     let unsubInventory: () => void;
+    let unsubHistory: () => void;
 
     if (user.role === 'admin') {
       const allOrdersQuery = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
@@ -311,6 +321,13 @@ export default function App() {
       }, (err) => {
         handleFirestoreError(err, OperationType.LIST, 'inventory');
       });
+
+      const historyQuery = query(collection(db, 'order_history'), orderBy('date', 'desc'));
+      unsubHistory = onSnapshot(historyQuery, (snapshot) => {
+        setOrderHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as OrderHistory)));
+      }, (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'order_history');
+      });
     } else {
       const supportQuery = query(collection(db, 'support_messages'), where('userId', '==', user.uid), orderBy('createdAt', 'desc'));
       unsubSupport = onSnapshot(supportQuery, (snapshot) => {
@@ -326,6 +343,7 @@ export default function App() {
       unsubAllUsers?.();
       unsubSupport?.();
       unsubInventory?.();
+      unsubHistory?.();
     };
   }, [user]);
 
@@ -365,6 +383,72 @@ export default function App() {
 
     cleanupExpiredOrders();
   }, [user, allOrders.length]);
+
+  // Cleanup orders older than 24 hours and save to history
+  useEffect(() => {
+    if (!user || user.role !== 'admin' || allOrders.length === 0) return;
+
+    const cleanupOldOrders = async () => {
+      const now = new Date();
+      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      
+      const oldOrders = allOrders.filter(o => {
+        if (!o.createdAt) return false;
+        const createdAt = o.createdAt.toDate();
+        return createdAt < twentyFourHoursAgo;
+      });
+
+      if (oldOrders.length > 0) {
+        // Group by date
+        const dailyStats: { [date: string]: { count: number, total: number } } = {};
+        
+        oldOrders.forEach(o => {
+          const dateStr = o.createdAt.toDate().toISOString().split('T')[0];
+          if (!dailyStats[dateStr]) {
+            dailyStats[dateStr] = { count: 0, total: 0 };
+          }
+          dailyStats[dateStr].count += 1;
+          dailyStats[dateStr].total += o.total;
+        });
+
+        const batch = writeBatch(db);
+        
+        // Update history
+        for (const dateStr of Object.keys(dailyStats)) {
+          const historyRef = doc(db, 'order_history', dateStr);
+          const existing = orderHistory.find(h => h.id === dateStr);
+          
+          if (existing) {
+            batch.update(historyRef, {
+              count: increment(dailyStats[dateStr].count),
+              totalAmount: increment(dailyStats[dateStr].total)
+            });
+          } else {
+            batch.set(historyRef, {
+              date: dateStr,
+              count: dailyStats[dateStr].count,
+              totalAmount: dailyStats[dateStr].total
+            });
+          }
+        }
+
+        // Delete old orders
+        oldOrders.forEach(o => {
+          batch.delete(doc(db, 'orders', o.id));
+        });
+
+        try {
+          await batch.commit();
+          showToast(`Cleaned up ${oldOrders.length} old orders and updated history.`);
+        } catch (err) {
+          console.error('Failed to cleanup old orders:', err);
+        }
+      }
+    };
+
+    const timer = setTimeout(cleanupOldOrders, 5000); // Wait 5s for data to settle
+    return () => clearTimeout(timer);
+  }, [user, allOrders.length, orderHistory.length]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -805,6 +889,12 @@ export default function App() {
                 className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${orderFilter === 'pending' ? 'bg-blue-600 text-white' : 'text-blue-200/40 hover:text-white'}`}
               >
                 Pending ({pendingOrdersCount})
+              </button>
+              <button 
+                onClick={() => setAdminSubView('history')}
+                className="px-4 py-2 rounded-lg text-xs font-bold text-blue-400 hover:bg-blue-600/10 transition-all flex items-center gap-2 border border-blue-600/20 ml-2"
+              >
+                <Database size={14} /> History
               </button>
             </div>
           </div>
@@ -1997,6 +2087,63 @@ export default function App() {
     </AnimatePresence>
   );
 
+  const renderHistoryView = () => (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <button 
+          onClick={() => setAdminSubView('orders')}
+          className="text-blue-400 flex items-center gap-2 hover:text-blue-300 transition-all w-fit"
+        >
+          <ArrowRight className="rotate-180" size={16} /> Back to Orders
+        </button>
+        <h3 className="text-xl font-bold text-white flex items-center gap-2">
+          <Database size={20} className="text-blue-400" /> Order History (Daily Stats)
+        </h3>
+        {orderHistory.length > 0 && (
+          <button 
+            onClick={async () => {
+              if (window.confirm('Are you sure you want to clear all history records?')) {
+                try {
+                  const batch = writeBatch(db);
+                  orderHistory.forEach((h) => {
+                    batch.delete(doc(db, 'order_history', h.id));
+                  });
+                  await batch.commit();
+                  showToast('History cleared successfully!');
+                } catch (err) {
+                  console.error('Failed to clear history:', err);
+                  showToast('Failed to clear history.');
+                }
+              }
+            }}
+            className="px-4 py-2 rounded-lg bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-all text-xs font-bold flex items-center gap-2"
+          >
+            <Trash2 size={14} /> Clear All History
+          </button>
+        )}
+      </div>
+      
+      <div className="grid grid-cols-1 gap-4">
+        {orderHistory.length === 0 ? (
+          <p className="text-blue-200/20 text-center py-20 bg-white/5 rounded-3xl border border-dashed border-white/10">No history records found</p>
+        ) : (
+          orderHistory.map((h) => (
+            <div key={h.id} className="p-6 rounded-3xl bg-white/5 border border-white/10 flex items-center justify-between group hover:border-blue-500/30 transition-all">
+              <div>
+                <p className="text-blue-400 font-bold text-lg">{h.date}</p>
+                <p className="text-blue-200/40 text-xs">Total Orders: <span className="text-white">{h.count}</span></p>
+              </div>
+              <div className="text-right">
+                <p className="text-emerald-400 font-bold text-xl">৳{h.totalAmount}</p>
+                <p className="text-blue-200/40 text-[10px] uppercase tracking-widest">Total Revenue</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
   const renderAdminPanel = () => {
     return (
       <div className="pb-24 pt-6 px-4 max-w-6xl mx-auto space-y-8">
@@ -2036,6 +2183,7 @@ export default function App() {
             {adminSubView === 'edit-product' && renderProductFormView({ isEdit: true })}
             {adminSubView === 'payment-settings' && renderPaymentSettingsView()}
             {adminSubView === 'inventory' && renderInventoryView()}
+            {adminSubView === 'history' && renderHistoryView()}
           </motion.div>
         </AnimatePresence>
 
