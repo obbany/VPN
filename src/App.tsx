@@ -240,7 +240,8 @@ export default function App() {
         }
       } else {
         setUser(null);
-        setView('login');
+        // If the current view requires auth, redirect to login, otherwise stay on home
+        setView(prev => (prev === 'admin' || prev === 'payment' || prev === 'support' || prev === 'orders') ? 'login' : prev);
       }
       setLoading(false);
     });
@@ -480,7 +481,7 @@ export default function App() {
   const handleLogout = async () => {
     await signOut(auth);
     setUser(null);
-    setView('login');
+    setView('home');
   };
 
   // --- Logic ---
@@ -1261,10 +1262,17 @@ export default function App() {
         
         <button 
           onClick={handleGmailLogin}
-          className="w-full py-3 rounded-xl bg-white text-slate-900 font-bold flex items-center justify-center gap-3 hover:bg-slate-100 transition-all active:scale-95 shadow-xl"
+          className="w-full py-3 rounded-xl bg-white text-slate-900 font-bold flex items-center justify-center gap-3 hover:bg-slate-100 transition-all active:scale-95 shadow-xl mb-4"
         >
           <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
           Continue with Google
+        </button>
+
+        <button 
+          onClick={() => setView('home')}
+          className="w-full py-3 rounded-xl bg-white/5 text-white/60 font-bold hover:bg-white/10 transition-all active:scale-95"
+        >
+          Back to Home
         </button>
       </motion.div>
     </div>
@@ -1315,7 +1323,14 @@ export default function App() {
               </div>
               <div className="grid grid-cols-1 gap-2">
                 <button 
-                  onClick={() => { setSelectedProduct(product); setView('payment'); }}
+                  onClick={() => { 
+                    if (!user) {
+                      setView('login');
+                      return;
+                    }
+                    setSelectedProduct(product); 
+                    setView('payment'); 
+                  }}
                   className="py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-all shadow-lg shadow-blue-600/20"
                 >
                   Order Now
@@ -2456,7 +2471,13 @@ export default function App() {
     );
   }
 
-  if (!user) return renderAuthView();
+  if (!user && view !== 'home' && view !== 'login') {
+    return renderAuthView();
+  }
+
+  if (view === 'login') {
+    return renderAuthView();
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
@@ -2470,20 +2491,31 @@ export default function App() {
             <span className="text-xl font-bold tracking-tighter text-white">NEXUS</span>
           </div>
           <div className="flex items-center gap-4">
-            {user.role === 'admin' && (
+            {user ? (
+              <>
+                {user.role === 'admin' && (
+                  <button 
+                    onClick={() => setView('admin')}
+                    className={`p-2 rounded-xl transition-all ${view === 'admin' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/40 hover:text-white'}`}
+                  >
+                    <Settings size={20} />
+                  </button>
+                )}
+                <button 
+                  onClick={handleLogout}
+                  className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all"
+                >
+                  <LogOut size={20} />
+                </button>
+              </>
+            ) : (
               <button 
-                onClick={() => setView('admin')}
-                className={`p-2 rounded-xl transition-all ${view === 'admin' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/40 hover:text-white'}`}
+                onClick={() => setView('login')}
+                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20"
               >
-                <Settings size={20} />
+                Login
               </button>
             )}
-            <button 
-              onClick={handleLogout}
-              className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all"
-            >
-              <LogOut size={20} />
-            </button>
           </div>
         </div>
       </header>
@@ -2532,13 +2564,25 @@ export default function App() {
               />
               <NavButton 
                 active={view === 'support'} 
-                onClick={() => setView('support')} 
+                onClick={() => {
+                  if (!user) {
+                    setView('login');
+                    return;
+                  }
+                  setView('support');
+                }} 
                 icon={<Headphones size={20} />} 
                 label="Support" 
               />
               <NavButton 
                 active={view === 'orders'} 
-                onClick={() => setView('orders')} 
+                onClick={() => {
+                  if (!user) {
+                    setView('login');
+                    return;
+                  }
+                  setView('orders');
+                }} 
                 icon={<User size={20} />} 
                 label="Orders" 
               />
