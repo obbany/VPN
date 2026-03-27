@@ -446,7 +446,11 @@ export default function App() {
     try {
       await signInWithPopup(auth, googleProvider);
       setView('home');
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user') {
+        console.log('User closed the login popup.');
+        return; // Do nothing if user closed the popup
+      }
       console.error('Login failed:', error);
       showToast('Login failed. Please try again.');
     }
