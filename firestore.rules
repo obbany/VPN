@@ -143,9 +143,21 @@ service cloud.firestore {
              (!('repliedAt' in data) || data.repliedAt is timestamp);
     }
 
+    function isValidUsedTransaction(data) {
+      return data.keys().hasAll(['usedAt', 'userId', 'orderId']) &&
+             data.usedAt is timestamp &&
+             data.userId == request.auth.uid &&
+             data.orderId is string;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
+
+    match /used_transactions/{txId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUsedTransaction(request.resource.data) && !exists(/databases/$(database)/documents/used_transactions/$(txId));
+    }
 
     match /order_history/{date} {
       allow read: if isAdmin();

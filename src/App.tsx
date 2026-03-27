@@ -109,7 +109,6 @@ interface InventoryItem {
   password?: string;
   key?: string;
   isUsed: boolean;
-  expiryDays?: number;
   assignedToOrderId?: string;
   createdAt: any;
 }
@@ -149,10 +148,13 @@ export default function App() {
   const [showNavbar, setShowNavbar] = useState(true);
   const lastScrollY = React.useRef(0);
   const [orderFilter, setOrderFilter] = useState<'all' | 'pending'>('all');
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [adminSubView, setAdminSubView] = useState<'dashboard' | 'users' | 'orders' | 'products' | 'support' | 'add-product' | 'edit-product' | 'payment-settings' | 'inventory' | 'history'>(() => {
     const saved = localStorage.getItem('nexus_admin_subview');
     return (saved as any) || 'dashboard';
   });
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [isConfirmingOrder, setIsConfirmingOrder] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [paymentSettings, setPaymentSettings] = useState({ bKash: '01700-000000', Nagad: '01700-000000' });
   
@@ -163,7 +165,6 @@ export default function App() {
   const [newInventoryEmail, setNewInventoryEmail] = useState('');
   const [newInventoryPass, setNewInventoryPass] = useState('');
   const [newInventoryKey, setNewInventoryKey] = useState('');
-  const [newInventoryExpiryDays, setNewInventoryExpiryDays] = useState('30');
   const [deletingInventoryId, setDeletingInventoryId] = useState<string | null>(null);
 
   const [cancellingOrder, setCancellingOrder] = useState<Order | null>(null);
@@ -350,40 +351,13 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('nexus_view', view);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
   }, [view]);
 
   useEffect(() => {
     localStorage.setItem('nexus_admin_subview', adminSubView);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
   }, [adminSubView]);
-
-  // Cleanup expired orders
-  useEffect(() => {
-    if (!user || user.role !== 'admin' || allOrders.length === 0) return;
-
-    const cleanupExpiredOrders = async () => {
-      const now = new Date();
-      const expiredOrders = allOrders.filter(o => {
-        if (!o.expiryDate) return false;
-        return new Date(o.expiryDate) < now;
-      });
-
-      if (expiredOrders.length > 0) {
-        const batch = writeBatch(db);
-        expiredOrders.forEach(o => {
-          batch.delete(doc(db, 'orders', o.id));
-        });
-        try {
-          await batch.commit();
-        } catch (err) {
-          console.error('Failed to cleanup expired orders:', err);
-        }
-      }
-    };
-
-    cleanupExpiredOrders();
-  }, [user, allOrders.length]);
 
   // Cleanup orders older than 24 hours and save to history
   useEffect(() => {
@@ -503,11 +477,11 @@ export default function App() {
   // --- Components ---
 
   const handleConfirmOrder = async (order: Order) => {
+    setIsConfirmingOrder(order.id);
     try {
       const credentials: { [key: string]: any } = {};
       const updates: Promise<void>[] = [];
       const inventoryUpdates: { id: string, data: any }[] = [];
-      let maxExpiryDays = 30;
 
       for (const item of order.items) {
         // Find available inventory for this product
@@ -515,6 +489,7 @@ export default function App() {
         
         if (availableItems.length < item.quantity) {
           showToast(`Not enough stock for ${item.name}. Please add more to inventory.`);
+          setIsConfirmingOrder(null);
           return;
         }
 
@@ -522,9 +497,6 @@ export default function App() {
         const itemCredentials = [];
         for (let i = 0; i < item.quantity; i++) {
           const invItem = availableItems[i];
-          if (invItem.expiryDays && invItem.expiryDays > 0) {
-            maxExpiryDays = Math.max(maxExpiryDays, invItem.expiryDays);
-          }
           itemCredentials.push({ email: invItem.email, pass: invItem.password, key: invItem.key });
           inventoryUpdates.push({
             id: invItem.id,
@@ -534,10 +506,6 @@ export default function App() {
         credentials[item.id] = itemCredentials;
       }
 
-      // Calculate expiry date
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + maxExpiryDays);
-
       // Update inventory items
       for (const update of inventoryUpdates) {
         updates.push(updateDoc(doc(db, 'inventory', update.id), update.data));
@@ -546,8 +514,7 @@ export default function App() {
       // Update order
       updates.push(updateDoc(doc(db, 'orders', order.id), {
         status: 'confirmed',
-        credentials,
-        expiryDate: expiryDate.toISOString()
+        credentials
       }));
 
       await Promise.all(updates);
@@ -555,6 +522,8 @@ export default function App() {
     } catch (err: any) {
       console.error('Confirm error:', err);
       showToast('Failed to confirm order: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsConfirmingOrder(null);
     }
   };
 
@@ -863,7 +832,15 @@ export default function App() {
   };
 
   const renderOrdersView = () => {
-    const filteredOrders = orderFilter === 'all' ? allOrders : allOrders.filter(o => o.status === 'pending');
+    let filteredOrders = orderFilter === 'all' ? allOrders : allOrders.filter(o => o.status === 'pending');
+    
+    if (orderSearchQuery.trim()) {
+      filteredOrders = filteredOrders.filter(o => 
+        o.transactionId.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+        o.userEmail.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+        o.id.toLowerCase().includes(orderSearchQuery.toLowerCase())
+      );
+    }
     
     return (
       <div className="space-y-6">
@@ -874,29 +851,41 @@ export default function App() {
           >
             <ArrowRight className="rotate-180" size={16} /> Back
           </button>
-          <div className="flex items-center gap-4">
-            <h3 className="text-xl font-bold text-white flex items-center gap-2">
-              <Package size={20} className="text-blue-400" /> Order Management
-            </h3>
-            <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-              <button 
-                onClick={() => setOrderFilter('all')}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${orderFilter === 'all' ? 'bg-blue-600 text-white' : 'text-blue-200/40 hover:text-white'}`}
-              >
-                All
-              </button>
-              <button 
-                onClick={() => setOrderFilter('pending')}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${orderFilter === 'pending' ? 'bg-blue-600 text-white' : 'text-blue-200/40 hover:text-white'}`}
-              >
-                Pending ({pendingOrdersCount})
-              </button>
-              <button 
-                onClick={() => setAdminSubView('history')}
-                className="px-4 py-2 rounded-lg text-xs font-bold text-blue-400 hover:bg-blue-600/10 transition-all flex items-center gap-2 border border-blue-600/20 ml-2"
-              >
-                <Database size={14} /> History
-              </button>
+          <div className="flex flex-col md:flex-row items-center gap-4 flex-1 justify-end">
+            <div className="relative w-full md:w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-200/40" size={16} />
+              <input
+                type="text"
+                placeholder="Search TrxID, Email, ID..."
+                value={orderSearchQuery}
+                onChange={(e) => setOrderSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+              />
+            </div>
+            <div className="flex items-center gap-4">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <Package size={20} className="text-blue-400" /> Order Management
+              </h3>
+              <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+                <button 
+                  onClick={() => setOrderFilter('all')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${orderFilter === 'all' ? 'bg-blue-600 text-white' : 'text-blue-200/40 hover:text-white'}`}
+                >
+                  All
+                </button>
+                <button 
+                  onClick={() => setOrderFilter('pending')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${orderFilter === 'pending' ? 'bg-blue-600 text-white' : 'text-blue-200/40 hover:text-white'}`}
+                >
+                  Pending ({pendingOrdersCount})
+                </button>
+                <button 
+                  onClick={() => setAdminSubView('history')}
+                  className="px-4 py-2 rounded-lg text-xs font-bold text-blue-400 hover:bg-blue-600/10 transition-all flex items-center gap-2 border border-blue-600/20 ml-2"
+                >
+                  <Database size={14} /> History
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -912,11 +901,6 @@ export default function App() {
                     <p className="text-[10px] font-mono text-blue-200/40 mb-1">{order.id}</p>
                     <p className="text-white font-bold">{order.userEmail}</p>
                     <p className="text-[10px] text-blue-200/30">{order.createdAt?.toDate().toLocaleString()}</p>
-                    {order.expiryDate && (
-                      <p className="text-[10px] text-red-400 font-bold mt-1">
-                        Expires: {new Date(order.expiryDate).toLocaleString()}
-                      </p>
-                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${
@@ -958,9 +942,10 @@ export default function App() {
                       <>
                         <button 
                           onClick={() => handleConfirmOrder(order)}
-                          className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 transition-all"
+                          disabled={isConfirmingOrder === order.id}
+                          className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 transition-all disabled:opacity-50"
                         >
-                          Confirm Payment
+                          {isConfirmingOrder === order.id ? 'Confirming...' : 'Confirm Payment'}
                         </button>
                         <button 
                           onClick={() => setStockOutOrder(order)}
@@ -1425,34 +1410,66 @@ export default function App() {
         </div>
 
         <button 
-          disabled={!transactionId}
           onClick={async () => { 
             if (!user) return;
             
-            const orderData = {
-              userId: user.uid,
-              userEmail: user.email,
-              items: [{ ...selectedProduct, quantity: 1 }],
-              total: totalPrice,
-              paymentMethod: paymentMethod,
-              transactionId: transactionId,
-              status: 'pending',
-              createdAt: serverTimestamp()
-            };
+            if (!transactionId.trim()) {
+              showToast('Please enter Transaction ID');
+              return;
+            }
 
+            setIsPlacingOrder(true);
+            
             try {
-              await addDoc(collection(db, 'orders'), orderData);
-              showToast('Order Placed Successfully! Please wait for admin confirmation.'); 
+              // Check if transaction ID is already used
+              const txRef = doc(db, 'used_transactions', transactionId.trim());
+              const txSnap = await getDoc(txRef);
+              
+              if (txSnap.exists()) {
+                showToast('This Transaction ID has already been used.');
+                setIsPlacingOrder(false);
+                return;
+              }
+
+              const orderData = {
+                userId: user.uid,
+                userEmail: user.email,
+                items: [{ ...selectedProduct, quantity: 1 }],
+                total: totalPrice,
+                paymentMethod: paymentMethod,
+                transactionId: transactionId.trim(),
+                status: 'pending',
+                createdAt: serverTimestamp()
+              };
+
+              // Use a batch to ensure atomicity
+              const batch = writeBatch(db);
+              const orderRef = doc(collection(db, 'orders'));
+              batch.set(orderRef, orderData);
+              batch.set(txRef, { 
+                usedAt: serverTimestamp(), 
+                userId: user.uid,
+                orderId: orderRef.id 
+              });
+
+              await batch.commit();
+              
+              showToast('Order Placed Successfully!'); 
               setView('orders'); 
               setSelectedProduct(null); 
               setTransactionId('');
             } catch (err) {
-              handleFirestoreError(err, OperationType.CREATE, 'orders');
+              console.error('Order placement error:', err);
+              handleFirestoreError(err, OperationType.WRITE, 'orders/used_transactions');
+              showToast('Failed to place order. Please try again.');
+            } finally {
+              setIsPlacingOrder(false);
             }
           }}
+          disabled={isPlacingOrder || !transactionId.trim()}
           className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-lg transition-all shadow-lg shadow-blue-600/20"
         >
-          Verify & Complete Order
+          {isPlacingOrder ? 'Processing...' : 'Verify & Complete Order'}
         </button>
 
         <div className="flex items-center justify-center gap-2 text-blue-200/40 text-sm">
@@ -1611,11 +1628,7 @@ export default function App() {
   };
 
   const renderOrdersPage = () => {
-    const activeOrders = orders.filter(o => {
-      if (!o.expiryDate) return true;
-      const expiry = new Date(o.expiryDate);
-      return expiry > new Date();
-    });
+    const activeOrders = orders;
 
     const pinnedOrders = activeOrders.filter(o => o.pinned);
     const unpinnedOrders = activeOrders.filter(o => !o.pinned);
@@ -1837,7 +1850,6 @@ export default function App() {
         email: newInventoryEmail,
         password: newInventoryPass,
         key: newInventoryKey || '',
-        expiryDays: Number(newInventoryExpiryDays) || 30,
         isUsed: false,
         createdAt: serverTimestamp()
       });
@@ -1845,7 +1857,6 @@ export default function App() {
       setNewInventoryEmail('');
       setNewInventoryPass('');
       setNewInventoryKey('');
-      setNewInventoryExpiryDays('30');
     } catch (err: any) {
       console.error('Add inventory error:', err);
       handleFirestoreError(err, OperationType.CREATE, 'inventory');
@@ -1937,18 +1948,6 @@ export default function App() {
                     placeholder="Activation Key"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-blue-200/40 uppercase tracking-widest">Expiry Days</label>
-                  <input
-                    type="number"
-                    value={newInventoryExpiryDays}
-                    onChange={(e) => setNewInventoryExpiryDays(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                    placeholder="30"
-                    required
-                  />
-                  <p className="text-[10px] text-blue-200/30">Order history will be deleted for user after these many days.</p>
-                </div>
                 <button
                   type="submit"
                   className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all flex items-center justify-center gap-2"
@@ -1991,7 +1990,6 @@ export default function App() {
                         <div className="flex items-center gap-3 text-xs text-blue-200/60 font-mono">
                           <span>{item.email}</span>
                           {item.key && <span>• {item.key}</span>}
-                          {item.expiryDays && <span>• {item.expiryDays} Days</span>}
                         </div>
                       </div>
                       <div className="flex items-center gap-4">

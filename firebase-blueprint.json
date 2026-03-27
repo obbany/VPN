@@ -94,9 +94,24 @@
         "totalAmount": { "type": "number", "description": "Total revenue on this date" }
       },
       "required": ["date", "count", "totalAmount"]
+    },
+    "UsedTransaction": {
+      "title": "UsedTransaction",
+      "description": "Record of a used transaction ID to prevent duplicates",
+      "type": "object",
+      "properties": {
+        "usedAt": { "type": "string", "format": "date-time", "description": "When the ID was used" },
+        "userId": { "type": "string", "description": "UID of the user who used it" },
+        "orderId": { "type": "string", "description": "ID of the associated order" }
+      },
+      "required": ["usedAt", "userId", "orderId"]
     }
   },
   "firestore": {
+    "/used_transactions/{txId}": {
+      "schema": "UsedTransaction",
+      "description": "Used transaction IDs"
+    },
     "/order_history/{date}": {
       "schema": "OrderHistory",
       "description": "Daily order statistics"
