@@ -31,7 +31,7 @@ import {
   Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db, googleProvider, handleFirestoreError, OperationType, sendEmailVerification } from './firebase';
+import { auth, db, googleProvider, handleFirestoreError, OperationType, sendEmailVerification } from './firebaseConfig';
 import { 
   signInWithPopup, 
   onAuthStateChanged, 
