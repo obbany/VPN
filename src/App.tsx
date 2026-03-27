@@ -1153,6 +1153,21 @@ export default function App() {
           <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">Nexus Digital</h1>
           <p className="text-blue-200/60">Sign in to continue</p>
         </div>
+
+        <div className="mb-8 relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-blue-600/20 to-transparent border border-blue-500/30 shadow-[0_0_20px_rgba(37,99,235,0.1)]">
+          <div className="absolute top-0 right-0 -mt-4 -mr-4 w-24 h-24 bg-blue-500/10 blur-3xl rounded-full" />
+          <div className="flex items-start gap-4 relative z-10">
+            <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center shrink-0 border border-blue-500/30">
+              <AlertCircle className="text-blue-400" size={20} />
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-sm font-bold text-blue-400 uppercase tracking-wider">Notice</h4>
+              <p className="text-xs text-blue-100/70 leading-relaxed font-medium">
+                আমাদের ওয়েবসাইটে লগইন করতে হলে কিংবা সাইনআপ করতে হলে শুধুমাত্র জিমেইল দিয়েই করতে হবে।
+              </p>
+            </div>
+          </div>
+        </div>
         
         <button 
           onClick={handleGmailLogin}
