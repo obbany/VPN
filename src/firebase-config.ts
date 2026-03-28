@@ -31,7 +31,10 @@ const firestoreDatabaseId = firebaseConfigJson.firestoreDatabaseId;
 const app = initializeApp(firebaseConfig);
 export const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
 export const auth = getAuth(app);
-export const db = getFirestore(app, firestoreDatabaseId);
+// If databaseId is "(default)" or empty, initialize with default settings
+export const db = (firestoreDatabaseId && firestoreDatabaseId !== '(default)') 
+  ? getFirestore(app, firestoreDatabaseId) 
+  : getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Error Handling Helper
@@ -84,10 +87,13 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 // Connection Test
 async function testConnection() {
   try {
+    console.log("Testing Firestore connection...");
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
+    console.log("Firestore connection successful!");
+  } catch (error: any) {
+    console.error("Firestore Connection Error Details:", error);
+    if (error.message && error.message.includes('the client is offline')) {
+      console.error("CRITICAL: Please ensure Firestore is ENABLED in your Firebase Console for project 'nexusvpnservices'.");
     }
   }
 }

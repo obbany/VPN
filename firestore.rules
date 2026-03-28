@@ -55,7 +55,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (('email' in request.auth.token && (request.auth.token.email == "robbanybagha805@gmail.com" || request.auth.token.email == "brothersonfire208@gmail.com")) ||
+        ((request.auth.token.email == "robbanybagha805@gmail.com" || request.auth.token.email == "brothersonfire208@gmail.com") ||
          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
     }
@@ -183,10 +183,10 @@ service cloud.firestore {
       allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role && (!('blocked' in request.resource.data) || request.resource.data.blocked == resource.data.blocked));
     }
 
+    // Products: Anyone can read, only Admin can write
     match /products/{productId} {
-      allow read: if true; // Products are public
-      allow create, update: if isAdmin() && isValidProduct(request.resource.data);
-      allow delete: if isAdmin();
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
     }
 
     match /orders/{orderId} {
