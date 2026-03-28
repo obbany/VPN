@@ -154,9 +154,21 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
+    // কানেকশন টেস্ট করার পারমিশন
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // ট্রানজেকশন আইডি চেক করার রুল
     match /used_transactions/{txId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidUsedTransaction(request.resource.data) && !exists(/databases/$(database)/documents/used_transactions/$(txId));
+      allow create: if isAuthenticated();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
 
     match /order_history/{date} {
@@ -171,9 +183,9 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    match /config/payments {
+    match /config/{docId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin() && isValidPaymentConfig(request.resource.data);
+      allow write: if isAdmin();
     }
 
     match /users/{userId} {
@@ -187,13 +199,6 @@ service cloud.firestore {
     match /products/{productId} {
       allow read: if true;
       allow create, update, delete: if isAdmin();
-    }
-
-    match /orders/{orderId} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isAuthenticated() && isValidOrder(request.resource.data);
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
     }
 
     match /support_messages/{messageId} {

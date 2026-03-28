@@ -136,6 +136,7 @@ export default function App() {
   const [supportMessages, setSupportMessages] = useState<any[]>([]);
   const [orderHistory, setOrderHistory] = useState<OrderHistory[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
@@ -254,7 +255,11 @@ export default function App() {
     const qProducts = query(collection(db, 'products'), orderBy('createdAt', 'desc'));
     const unsubProducts = onSnapshot(qProducts, (snapshot) => {
       setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'products'));
+      setProductsLoading(false);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, 'products');
+      setProductsLoading(false);
+    });
 
     return () => unsubProducts();
   }, []);
@@ -1287,47 +1292,68 @@ export default function App() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-        {filteredProducts.map((product) => (
-          <motion.div 
-            layout
-            key={product.id}
-            className="group rounded-2xl bg-white/5 border border-white/10 overflow-hidden hover:border-blue-500/50 transition-all duration-300"
-          >
-            <div className="relative h-32 sm:h-40 overflow-hidden">
-              <img 
-                src={product.image} 
-                alt={product.name}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
-              />
-              <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-blue-600/90 text-white text-[10px] font-bold backdrop-blur-md">
-                {product.category}
+        {productsLoading ? (
+          Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} className="rounded-2xl bg-white/5 border border-white/10 overflow-hidden animate-pulse">
+              <div className="h-32 sm:h-40 bg-white/10" />
+              <div className="p-3 space-y-3">
+                <div className="h-4 bg-white/10 rounded w-3/4" />
+                <div className="h-3 bg-white/10 rounded w-1/2" />
+                <div className="flex justify-between items-center">
+                  <div className="h-6 bg-white/10 rounded w-1/4" />
+                </div>
+                <div className="h-10 bg-white/10 rounded w-full" />
               </div>
             </div>
-            <div className="p-3">
-              <h3 className="text-sm font-bold text-white mb-1 truncate">{product.name}</h3>
-              <p className="text-blue-200/40 text-[10px] mb-3 line-clamp-1">{product.description}</p>
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-lg font-bold text-blue-400">৳{product.price}</span>
+          ))
+        ) : filteredProducts.length > 0 ? (
+          filteredProducts.map((product) => (
+            <motion.div 
+              layout
+              key={product.id}
+              className="group rounded-2xl bg-white/5 border border-white/10 overflow-hidden hover:border-blue-500/50 transition-all duration-300"
+            >
+              <div className="relative h-32 sm:h-40 overflow-hidden">
+                <img 
+                  src={product.image} 
+                  alt={product.name}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                />
+                <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-blue-600/90 text-white text-[10px] font-bold backdrop-blur-md">
+                  {product.category}
+                </div>
               </div>
-              <div className="grid grid-cols-1 gap-2">
-                <button 
-                  onClick={() => { 
-                    if (!user) {
-                      setView('login');
-                      return;
-                    }
-                    setSelectedProduct(product); 
-                    setView('payment'); 
-                  }}
-                  className="py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-all shadow-lg shadow-blue-600/20"
-                >
-                  Order Now
-                </button>
+              <div className="p-3">
+                <h3 className="text-sm font-bold text-white mb-1 truncate">{product.name}</h3>
+                <p className="text-blue-200/40 text-[10px] mb-3 line-clamp-1">{product.description}</p>
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-lg font-bold text-blue-400">৳{product.price}</span>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <button 
+                    onClick={() => { 
+                      if (!user) {
+                        setView('login');
+                        return;
+                      }
+                      setSelectedProduct(product); 
+                      setView('payment'); 
+                    }}
+                    className="py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-all shadow-lg shadow-blue-600/20"
+                  >
+                    Order Now
+                  </button>
+                </div>
               </div>
-            </div>
-          </motion.div>
-        ))}
+            </motion.div>
+          ))
+        ) : (
+          <div className="col-span-full py-20 text-center">
+            <Package className="mx-auto text-blue-200/10 mb-4" size={48} />
+            <p className="text-blue-200/40">No products found matching your search.</p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1464,7 +1490,7 @@ export default function App() {
               setTransactionId('');
             } catch (err) {
               console.error('Order placement error:', err);
-              handleFirestoreError(err, OperationType.WRITE, 'orders/used_transactions');
+              handleFirestoreError(err, OperationType.WRITE, 'used_transactions');
               showToast('Failed to place order. Please try again.');
             } finally {
               setIsPlacingOrder(false);

@@ -11,7 +11,23 @@ import {
   updateProfile,
   sendEmailVerification
 } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, where, orderBy, onSnapshot, getDocFromServer } from 'firebase/firestore';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  getDocFromServer,
+  enableMultiTabIndexedDbPersistence
+} from 'firebase/firestore';
 export { collection, doc, setDoc, getDoc, getDocs, addDoc, updateDoc, deleteDoc, query, where, orderBy, onSnapshot, getDocFromServer, sendEmailVerification };
 import firebaseConfigJson from '../firebase-applet-config.json';
 
@@ -35,6 +51,20 @@ export const auth = getAuth(app);
 export const db = (firestoreDatabaseId && firestoreDatabaseId !== '(default)') 
   ? getFirestore(app, firestoreDatabaseId) 
   : getFirestore(app);
+
+// Enable persistence for faster loading
+if (typeof window !== 'undefined') {
+  enableMultiTabIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+      // Multiple tabs open, persistence can only be enabled in one tab at a time.
+      console.warn('Firestore persistence failed: Multiple tabs open');
+    } else if (err.code === 'unimplemented') {
+      // The current browser does not support all of the features required to enable persistence
+      console.warn('Firestore persistence failed: Browser not supported');
+    }
+  });
+}
+
 export const googleProvider = new GoogleAuthProvider();
 
 // Error Handling Helper
