@@ -75,7 +75,6 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'email', 'role']) &&
              data.uid == request.auth.uid &&
-             ('email' in request.auth.token && data.email == request.auth.token.email) &&
              isValidEmail(data.email) &&
              data.role in ['admin', 'user'] &&
              (!('blocked' in data) || data.blocked is bool) &&
@@ -154,12 +153,12 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    // কানেকশন টেস্ট করার পারমিশন
-    match /test/connection {
+    // Permission for connection test
+    match /test/{docId} {
       allow read: if true;
     }
 
-    // ট্রানজেকশন আইডি চেক করার রুল
+    // Rule for checking transaction ID
     match /used_transactions/{txId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();

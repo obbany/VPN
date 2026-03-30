@@ -90,7 +90,7 @@ interface Order {
   credentials?: { [productId: string]: string | { email?: string, pass?: string, key?: string } | any[] };
 }
 
-type View = 'login' | 'home' | 'payment' | 'support' | 'orders' | 'admin';
+type View = 'login' | 'signup' | 'home' | 'payment' | 'support' | 'orders' | 'admin';
 
 interface UserProfile {
   uid: string;
@@ -173,7 +173,15 @@ export default function App() {
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [deletingMessage, setDeletingMessage] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState(false);
+  const [passwordError, setPasswordError] = useState(false);
   
+  // Product Form State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
   // Product Form State
   const [newProduct, setNewProduct] = useState({
     name: '',
@@ -209,46 +217,57 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        if (userDoc.exists()) {
-          const profile = userDoc.data() as UserProfile;
-          if (profile.blocked) {
-            await signOut(auth);
-            showToast('Your account has been blocked. Please contact support.');
-            setLoading(false);
-            return;
+        // If we have a firebase user but no profile yet, we are still "loading" auth
+        if (!user) setAuthLoading(true);
+        
+        try {
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          if (userDoc.exists()) {
+            const profile = userDoc.data() as UserProfile;
+            if (profile.blocked) {
+              await signOut(auth);
+              showToast('Your account has been blocked. Please contact support.');
+              setLoading(false);
+              setAuthLoading(false);
+              return;
+            }
+            // Force admin role for default admins if not already set
+            const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com' || firebaseUser.email === 'brothersonfire208@gmail.com';
+            if (isDefaultAdmin && profile.role !== 'admin') {
+              profile.role = 'admin';
+              await updateDoc(doc(db, 'users', firebaseUser.uid), { role: 'admin' });
+            }
+            setUser(profile);
+            setView(prev => (prev === 'login' || prev === 'signup') ? 'home' : prev);
+          } else {
+            const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com' || firebaseUser.email === 'brothersonfire208@gmail.com';
+            const newProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              displayName: firebaseUser.displayName || 'User',
+              role: isDefaultAdmin ? 'admin' : 'user',
+              blocked: false,
+              createdAt: serverTimestamp()
+            };
+            await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
+            setUser(newProfile);
+            setView(prev => (prev === 'login' || prev === 'signup') ? 'home' : prev);
           }
-          // Force admin role for default admins if not already set
-          const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com' || firebaseUser.email === 'brothersonfire208@gmail.com';
-          if (isDefaultAdmin && profile.role !== 'admin') {
-            profile.role = 'admin';
-            await updateDoc(doc(db, 'users', firebaseUser.uid), { role: 'admin' });
-          }
-          setUser(profile);
-          setView(prev => prev === 'login' ? 'home' : prev);
-        } else {
-          const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com' || firebaseUser.email === 'brothersonfire208@gmail.com';
-          const newProfile: UserProfile = {
-            uid: firebaseUser.uid,
-            email: firebaseUser.email || '',
-            displayName: firebaseUser.displayName || 'User',
-            role: isDefaultAdmin ? 'admin' : 'user',
-            blocked: false,
-            createdAt: serverTimestamp()
-          };
-          await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
-          setUser(newProfile);
-          setView(prev => prev === 'login' ? 'home' : prev);
+        } catch (err) {
+          console.error("Error fetching user profile:", err);
+        } finally {
+          setAuthLoading(false);
         }
       } else {
         setUser(null);
+        setAuthLoading(false);
         // If the current view requires auth, redirect to login, otherwise stay on home
         setView(prev => (prev === 'admin' || prev === 'payment' || prev === 'support' || prev === 'orders') ? 'login' : prev);
       }
       setLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [user?.uid]);
 
   // --- Real-time Data ---
   useEffect(() => {
@@ -283,11 +302,17 @@ export default function App() {
     // User's Orders
     const ordersQuery = query(
       collection(db, 'orders'),
-      where('userId', '==', user.uid),
-      orderBy('createdAt', 'desc')
+      where('userId', '==', user.uid)
     );
     const unsubOrders = onSnapshot(ordersQuery, (snapshot) => {
-      setOrders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
+      const sortedOrders = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Order))
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis() || 0;
+          const timeB = b.createdAt?.toMillis() || 0;
+          return timeB - timeA;
+        });
+      setOrders(sortedOrders);
     }, (err) => {
       handleFirestoreError(err, OperationType.LIST, 'orders');
       showToast('Failed to load orders.');
@@ -336,9 +361,16 @@ export default function App() {
         handleFirestoreError(err, OperationType.LIST, 'order_history');
       });
     } else {
-      const supportQuery = query(collection(db, 'support_messages'), where('userId', '==', user.uid), orderBy('createdAt', 'desc'));
+      const supportQuery = query(collection(db, 'support_messages'), where('userId', '==', user.uid));
       unsubSupport = onSnapshot(supportQuery, (snapshot) => {
-        setSupportMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        const sortedMsgs = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() }))
+          .sort((a: any, b: any) => {
+            const timeA = a.createdAt?.toMillis() || 0;
+            const timeB = b.createdAt?.toMillis() || 0;
+            return timeB - timeA;
+          });
+        setSupportMessages(sortedMsgs);
       }, (err) => {
         handleFirestoreError(err, OperationType.LIST, 'support_messages');
       });
@@ -447,24 +479,107 @@ export default function App() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const handleGmailLogin = async () => {
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmailError(false);
+    setPasswordError(false);
+    
+    if (!email || !password) {
+      if (!email) setEmailError(true);
+      if (!password) setPasswordError(true);
+      return;
+    }
+    
+    setAuthLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithEmailAndPassword(auth, email, password);
       setView('home');
+      setEmail('');
+      setPassword('');
     } catch (error: any) {
-      if (error.code === 'auth/popup-closed-by-user') {
-        console.log('User closed the login popup.');
-        return; // Do nothing if user closed the popup
-      }
       console.error('Login failed:', error);
-      showToast('Login failed. Please try again.');
+      setAuthLoading(false);
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+        setEmailError(true);
+        setPasswordError(true);
+      } else if (error.code === 'auth/wrong-password') {
+        setPasswordError(true);
+      } else if (error.code === 'auth/invalid-email') {
+        setEmailError(true);
+      } else {
+        showToast('Login failed. Please try again.');
+      }
     }
   };
 
+  const handleEmailSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password || !displayName) {
+      showToast('Please fill all fields');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+      
+      await updateProfile(firebaseUser, { displayName });
+
+      const isDefaultAdmin = email === 'robbanybagha805@gmail.com' || email === 'brothersonfire208@gmail.com';
+      const newProfile: UserProfile = {
+        uid: firebaseUser.uid,
+        email: email,
+        displayName: displayName,
+        role: isDefaultAdmin ? 'admin' : 'user',
+        blocked: false,
+        createdAt: serverTimestamp()
+      };
+      await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
+      
+      showToast('Account created successfully!');
+      setView('home');
+      setEmail('');
+      setPassword('');
+      setDisplayName('');
+    } catch (error: any) {
+      console.error('Sign up failed:', error);
+      setAuthLoading(false);
+      let msg = 'Sign up failed';
+      if (error.code === 'auth/email-already-in-use') msg = 'Email already in use';
+      else if (error.code === 'auth/weak-password') msg = 'Password is too weak';
+      else if (error.code === 'auth/invalid-email') msg = 'Invalid email format';
+      showToast(msg);
+    }
+  };
+
+  const handleGmailLogin = async () => {
+    setAuthLoading(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      setView('home');
+      showToast('Login successful!');
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user') {
+        setAuthLoading(false);
+        return;
+      }
+      console.error('Login failed:', error);
+      showToast('Google login failed. Please try again.');
+      setAuthLoading(false);
+    }
+    // Note: setAuthLoading(false) is handled in onAuthStateChanged
+  };
+
   const handleLogout = async () => {
-    await signOut(auth);
-    setUser(null);
-    setView('home');
+    try {
+      await signOut(auth);
+      setUser(null);
+      setView('home');
+      showToast('Logged out successfully');
+    } catch (error) {
+      console.error('Logout failed:', error);
+      showToast('Logout failed');
+    }
   };
 
   // --- Logic ---
@@ -527,6 +642,25 @@ export default function App() {
       }));
 
       await Promise.all(updates);
+      
+      // Send confirmation email
+      try {
+        await fetch('/api/send-confirmation-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: order.userEmail,
+            orderId: order.id,
+            items: order.items,
+            total: order.total,
+            credentials: credentials // Passing the actual assigned credentials
+          })
+        });
+      } catch (emailErr) {
+        console.error('Failed to send confirmation email:', emailErr);
+        // We don't block the UI if email fails, as the order is already confirmed in DB
+      }
+
       showToast('Order confirmed and credentials assigned successfully!');
     } catch (err: any) {
       console.error('Confirm error:', err);
@@ -1236,38 +1370,96 @@ export default function App() {
       >
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">Nexus Digital</h1>
-          <p className="text-blue-200/60">Sign in to continue</p>
+          <p className="text-blue-200/60">{view === 'login' ? 'Sign in to continue' : 'Create an account'}</p>
         </div>
 
-        <div className="mb-8 relative overflow-hidden p-5 rounded-2xl bg-gradient-to-br from-blue-600/20 to-transparent border border-blue-500/30 shadow-[0_0_20px_rgba(37,99,235,0.1)]">
-          <div className="absolute top-0 right-0 -mt-4 -mr-4 w-24 h-24 bg-blue-500/10 blur-3xl rounded-full" />
-          <div className="flex items-start gap-4 relative z-10">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center shrink-0 border border-blue-500/30">
-              <AlertCircle className="text-blue-400" size={20} />
+        <form onSubmit={view === 'login' ? handleEmailLogin : handleEmailSignUp} className="space-y-4 mb-6">
+          {view === 'signup' && (
+            <div>
+              <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Full Name</label>
+              <input 
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                placeholder="John Doe"
+                required
+              />
             </div>
-            <div className="space-y-1">
-              <h4 className="text-sm font-bold text-blue-400 uppercase tracking-wider">Notice</h4>
-              <p className="text-xs text-blue-100/70 leading-relaxed font-medium">
-                আমাদের ওয়েবসাইটে লগইন করতে হলে কিংবা সাইনআপ করতে হলে শুধুমাত্র জিমেইল দিয়েই করতে হবে।
-              </p>
-            </div>
+          )}
+          <div>
+            <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Email Address</label>
+            <input 
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setEmailError(false);
+              }}
+              className={`w-full px-4 py-3 rounded-xl bg-white/5 border ${emailError ? 'border-red-500 ring-2 ring-red-500/20' : 'border-white/10'} text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all`}
+              placeholder="example@gmail.com"
+              required
+            />
           </div>
+          <div>
+            <label className="block text-xs font-bold text-blue-200/40 uppercase tracking-widest mb-2">Password</label>
+            <input 
+              type="password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setPasswordError(false);
+              }}
+              className={`w-full px-4 py-3 rounded-xl bg-white/5 border ${passwordError ? 'border-red-500 ring-2 ring-red-500/20' : 'border-white/10'} text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all`}
+              placeholder="••••••••"
+              required
+            />
+          </div>
+          <button 
+            type="submit"
+            disabled={authLoading}
+            className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all active:scale-95 shadow-lg shadow-blue-600/20 disabled:opacity-50"
+          >
+            {authLoading ? 'Processing...' : (view === 'login' ? 'Login' : 'Sign Up')}
+          </button>
+        </form>
+
+        <div className="relative flex items-center justify-center mb-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-white/10"></div>
+          </div>
+          <span className="relative px-4 bg-slate-950 text-xs text-blue-200/40 uppercase tracking-widest">Or continue with</span>
         </div>
         
         <button 
           onClick={handleGmailLogin}
-          className="w-full py-3 rounded-xl bg-white text-slate-900 font-bold flex items-center justify-center gap-3 hover:bg-slate-100 transition-all active:scale-95 shadow-xl mb-4"
+          className="w-full py-3 rounded-xl bg-white text-slate-900 font-bold flex items-center justify-center gap-3 hover:bg-slate-100 transition-all active:scale-95 shadow-xl mb-6"
         >
           <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-          Continue with Google
+          Google
         </button>
 
-        <button 
-          onClick={() => setView('home')}
-          className="w-full py-3 rounded-xl bg-white/5 text-white/60 font-bold hover:bg-white/10 transition-all active:scale-95"
-        >
-          Back to Home
-        </button>
+        <div className="text-center space-y-4">
+          <p className="text-sm text-blue-200/60">
+            {view === 'login' ? "Don't have an account?" : "Already have an account?"}
+            <button 
+              onClick={() => {
+                setView(view === 'login' ? 'signup' : 'login');
+                setEmailError(false);
+                setPasswordError(false);
+              }}
+              className="ml-2 text-blue-400 font-bold hover:text-blue-300 transition-colors"
+            >
+              {view === 'login' ? 'Sign Up' : 'Login'}
+            </button>
+          </p>
+          <button 
+            onClick={() => setView('home')}
+            className="text-white/40 text-xs font-bold hover:text-white/60 transition-all"
+          >
+            Back to Home
+          </button>
+        </div>
       </motion.div>
     </div>
   );
@@ -1277,7 +1469,7 @@ export default function App() {
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
         <div>
           <h2 className="text-3xl font-bold text-white tracking-tight">Digital Catalog</h2>
-          <p className="text-blue-200/50">Explore our premium digital assets</p>
+          <p className="text-blue-200/50">Explore our premium digital services</p>
         </div>
         <div className="relative group">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-200/40 group-focus-within:text-blue-400 transition-colors" size={20} />
@@ -1285,7 +1477,7 @@ export default function App() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search products..."
+            placeholder="Search services..."
             className="w-full md:w-80 pl-12 pr-4 py-3 rounded-2xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
           />
         </div>
@@ -1410,7 +1602,7 @@ export default function App() {
 
         <div className="p-6 rounded-3xl bg-white/5 border border-white/10 space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-blue-200/60 text-sm">Send Money to:</span>
+            <span className="text-blue-200/60 text-sm">Send money to this number:</span>
             <div className="flex items-center gap-2">
               <span className="text-white font-mono font-bold">{paymentMethod === 'bKash' ? paymentSettings.bKash : paymentSettings.Nagad}</span>
               <button 
@@ -1422,7 +1614,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-blue-200/60">Payable Amount:</span>
+            <span className="text-blue-200/60">Total Amount:</span>
             <span className="text-blue-400 font-bold">৳{totalPrice}</span>
           </div>
         </div>
@@ -1436,7 +1628,7 @@ export default function App() {
             placeholder="Enter your TrxID here"
             className="w-full px-4 py-4 rounded-2xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-mono uppercase"
           />
-          <p className="text-xs text-blue-200/30">Please enter the Transaction ID you received after the payment.</p>
+          <p className="text-xs text-blue-200/30">Enter the transaction ID you received after payment.</p>
         </div>
 
         <button 
@@ -1484,7 +1676,7 @@ export default function App() {
 
               await batch.commit();
               
-              showToast('Order Placed Successfully!'); 
+              showToast('Order placed successfully!'); 
               setView('orders'); 
               setSelectedProduct(null); 
               setTransactionId('');
@@ -1542,8 +1734,8 @@ export default function App() {
         <div className="space-y-6">
           <div className="p-8 rounded-3xl bg-white/5 border border-white/10 text-center">
             <Headphones size={48} className="mx-auto text-blue-500 mb-4" />
-            <h3 className="text-xl font-bold text-white mb-2">How can we help?</h3>
-            <p className="text-blue-200/40 mb-6">Our team is available 24/7 to assist you with your digital purchases.</p>
+            <h3 className="text-xl font-bold text-white mb-2">How can we help you?</h3>
+            <p className="text-blue-200/40 mb-6">Our team is available 24/7 to assist with your digital purchases.</p>
             
             <div className="space-y-4 text-left">
               <textarea 
@@ -1579,7 +1771,7 @@ export default function App() {
                   <span className="w-full border-t border-white/5"></span>
                 </div>
                 <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-slate-900 px-2 text-blue-200/20 font-bold tracking-widest">OR</span>
+                  <span className="bg-slate-900 px-2 text-blue-200/20 font-bold tracking-widest">Or</span>
                 </div>
               </div>
 
@@ -1590,7 +1782,7 @@ export default function App() {
                 className="w-full py-4 rounded-xl bg-[#24A1DE]/10 border border-[#24A1DE]/20 text-[#24A1DE] font-bold transition-all flex items-center justify-center gap-3 hover:bg-[#24A1DE] hover:text-white shadow-lg shadow-[#24A1DE]/10"
               >
                 <Send size={20} />
-                Join Our Telegram Channel
+                Join our Telegram Channel
               </a>
             </div>
           </div>
@@ -1694,8 +1886,8 @@ export default function App() {
               <AlertCircle size={18} />
             </div>
             <div>
-              <p className="text-sm font-bold text-orange-400">স্টকে নাই (Out of Stock)</p>
-              <p className="text-xs text-orange-300/60">দুঃখিত, এই প্রোডাক্টটি বর্তমানে আমাদের স্টকে নেই। অনুগ্রহ করে অন্য প্রোডাক্ট ট্রাই করুন।</p>
+              <p className="text-sm font-bold text-orange-400">Out of Stock</p>
+              <p className="text-xs text-orange-300/60">Sorry, this product is currently out of stock. Please try another product.</p>
             </div>
           </div>
         )}
@@ -1837,8 +2029,8 @@ export default function App() {
                     <Bookmark size={20} fill="currentColor" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-bold text-white">পিন করা অর্ডার (Pinned)</h3>
-                    <p className="text-xs text-blue-200/40">আপনার গুরুত্বপূর্ণ অর্ডারগুলো এখানে থাকবে</p>
+                    <h3 className="text-xl font-bold text-white">Pinned Orders</h3>
+                    <p className="text-xs text-blue-200/40">Your important orders will be here</p>
                   </div>
                 </div>
                 <div className="space-y-6">
@@ -1853,7 +2045,7 @@ export default function App() {
                   <div className="w-10 h-10 rounded-2xl bg-white/5 flex items-center justify-center text-blue-200/40">
                     <CreditCard size={20} />
                   </div>
-                  <h3 className="text-xl font-bold text-white">সব অর্ডার (All Orders)</h3>
+                  <h3 className="text-xl font-bold text-white">All Orders</h3>
                 </div>
               )}
               <div className="space-y-6">
@@ -2490,164 +2682,210 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <motion.div 
-          animate={{ rotate: 360 }}
-          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-          className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
-        />
+        <div className="flex flex-col items-center gap-4">
+          <motion.div 
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+            className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
+          />
+          <p className="text-blue-200/60 font-medium animate-pulse">Loading...</p>
+        </div>
       </div>
     );
   }
 
-  if (!user && view !== 'home' && view !== 'login') {
-    return renderAuthView();
-  }
-
-  if (view === 'login') {
-    return renderAuthView();
-  }
+  const isAuthView = (view === 'login' || view === 'signup' || (!user && view !== 'home'));
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-bottom border-white/5 px-4 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30">
-              <ShieldCheck className="text-white" />
-            </div>
-            <span className="text-xl font-bold tracking-tighter text-white">NEXUS</span>
-          </div>
-          <div className="flex items-center gap-4">
-            {user ? (
-              <>
-                {user.role === 'admin' && (
-                  <button 
-                    onClick={() => setView('admin')}
-                    className={`p-2 rounded-xl transition-all ${view === 'admin' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/40 hover:text-white'}`}
-                  >
-                    <Settings size={20} />
-                  </button>
-                )}
-                <button 
-                  onClick={handleLogout}
-                  className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all"
-                >
-                  <LogOut size={20} />
-                </button>
-              </>
-            ) : (
-              <button 
-                onClick={() => setView('login')}
-                className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20"
-              >
-                Login
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {renderDeleteMessageModal()}
-      {renderDeleteInventoryModal()}
-      {renderDeleteProductModal()}
-      {renderCancelOrderModal()}
-      {renderStockOutModal()}
-
-      {/* Main Content */}
-      <main className="relative">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={view}
-            initial={{ opacity: 0, x: 10 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -10 }}
-            transition={{ duration: 0.2 }}
-          >
-            {view === 'home' && renderHomepage()}
-            {view === 'payment' && renderPaymentPage()}
-            {view === 'support' && renderSupportPage()}
-            {view === 'orders' && renderOrdersPage()}
-            {view === 'admin' && user.role === 'admin' && renderAdminPanel()}
-          </motion.div>
-        </AnimatePresence>
-      </main>
-
-      {/* Bottom Navigation */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30 flex flex-col">
+      {/* Toast Notification - Always rendered at top level */}
       <AnimatePresence>
-        {view === 'home' && showNavbar && (
-          <motion.nav 
-            initial={{ y: 100, x: '-50%', opacity: 0 }}
-            animate={{ y: 0, x: '-50%', opacity: 1 }}
-            exit={{ y: 100, x: '-50%', opacity: 0 }}
-            transition={{ duration: 0.3, ease: 'easeInOut' }}
-            className="fixed bottom-4 left-1/2 w-[85%] max-w-xs z-50"
+        {toastMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: -50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: -50, x: '-50%' }}
+            className="fixed top-6 left-1/2 z-[200] px-6 py-3 rounded-2xl bg-blue-600 text-white font-bold shadow-2xl shadow-blue-600/20 border border-white/20 backdrop-blur-xl flex items-center gap-3"
           >
-            <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-2xl p-1.5 shadow-2xl flex items-center justify-around">
-              <NavButton 
-                active={view === 'home'} 
-                onClick={() => setView('home')} 
-                icon={<Home size={20} />} 
-                label="Home" 
-              />
-              <NavButton 
-                active={view === 'support'} 
-                onClick={() => {
-                  if (!user) {
-                    setView('login');
-                    return;
-                  }
-                  setView('support');
-                }} 
-                icon={<Headphones size={20} />} 
-                label="Support" 
-              />
-              <NavButton 
-                active={view === 'orders'} 
-                onClick={() => {
-                  if (!user) {
-                    setView('login');
-                    return;
-                  }
-                  setView('orders');
-                }} 
-                icon={<User size={20} />} 
-                label="Orders" 
-              />
+            <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+              <ShieldCheck size={14} />
             </div>
-          </motion.nav>
+            {toastMessage}
+          </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Footer */}
-      <footer className="bg-slate-950 border-t border-white/5 py-12 px-4 pb-32">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8">
-          <div className="flex flex-col items-center md:items-start gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/20">
-                <ShieldCheck className="text-white" size={18} />
+      {isAuthView ? (
+        renderAuthView()
+      ) : (
+        <>
+          {/* Header */}
+          <header className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-bottom border-white/5 px-4 py-4">
+            <div className="max-w-7xl mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
+                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30">
+                  <ShieldCheck className="text-white" />
+                </div>
+                <span className="text-xl font-bold tracking-tighter text-white">NEXUS</span>
               </div>
-              <span className="text-lg font-bold tracking-tighter text-white">NEXUS</span>
+              <div className="flex items-center gap-4">
+                <AnimatePresence mode="wait">
+                  {user ? (
+                    <motion.div 
+                      key="user-actions"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ duration: 0.08 }}
+                      className="flex items-center gap-4"
+                    >
+                      {user.role === 'admin' && (
+                        <button 
+                          onClick={() => setView('admin')}
+                          className={`p-2 rounded-xl transition-all ${view === 'admin' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/40 hover:text-white'}`}
+                        >
+                          <Settings size={20} />
+                        </button>
+                      )}
+                      <button 
+                        onClick={handleLogout}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all"
+                      >
+                        <LogOut size={20} />
+                      </button>
+                    </motion.div>
+                  ) : (
+                    !authLoading && (
+                      <motion.div 
+                        key="auth-buttons"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        transition={{ duration: 0.06 }}
+                        className="flex items-center gap-2"
+                      >
+                        <button 
+                          onClick={() => setView('login')}
+                          className="px-4 py-2 rounded-xl bg-white/5 text-white text-xs font-bold hover:bg-white/10 transition-all border border-white/10"
+                        >
+                          Login
+                        </button>
+                        <button 
+                          onClick={() => setView('signup')}
+                          className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20"
+                        >
+                          Sign Up
+                        </button>
+                      </motion.div>
+                    )
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
-            <p className="text-blue-200/40 text-sm max-w-xs text-center md:text-left leading-relaxed">
-              Premium VPN solutions for secure and unrestricted internet access. Your privacy is our priority.
-            </p>
-          </div>
-          <div className="flex flex-col items-center md:items-end gap-3 text-center md:text-right">
-            <p className="text-white/60 text-sm font-medium">
-              © 2026 NEXUS VPN. All rights reserved.
-            </p>
-            <div className="flex flex-col gap-1">
-              <p className="text-blue-400 text-[11px] font-bold uppercase tracking-[0.2em]">
-                @ NEXUS PREMIUM SERVICES
-              </p>
-              <p className="text-blue-200/20 text-[10px] font-mono uppercase tracking-widest">
-                Trusted by thousands of users worldwide
-              </p>
+          </header>
+
+          {renderDeleteMessageModal()}
+          {renderDeleteInventoryModal()}
+          {renderDeleteProductModal()}
+          {renderCancelOrderModal()}
+          {renderStockOutModal()}
+
+          {/* Main Content */}
+          <main className="relative flex-grow">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={view}
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                {view === 'home' && renderHomepage()}
+                {view === 'payment' && renderPaymentPage()}
+                {view === 'support' && renderSupportPage()}
+                {view === 'orders' && renderOrdersPage()}
+                {view === 'admin' && user?.role === 'admin' && renderAdminPanel()}
+              </motion.div>
+            </AnimatePresence>
+          </main>
+
+          {/* Bottom Navigation */}
+          <AnimatePresence>
+            {view === 'home' && showNavbar && (
+              <motion.nav 
+                initial={{ y: 100, x: '-50%', opacity: 0 }}
+                animate={{ y: 0, x: '-50%', opacity: 1 }}
+                exit={{ y: 100, x: '-50%', opacity: 0 }}
+                transition={{ duration: 0.3, ease: 'easeInOut' }}
+                className="fixed bottom-4 left-1/2 w-[85%] max-w-xs z-50"
+              >
+                <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-2xl p-1.5 shadow-2xl flex items-center justify-around">
+                  <NavButton 
+                    active={view === 'home'} 
+                    onClick={() => setView('home')} 
+                    icon={<Home size={20} />} 
+                    label="Home" 
+                  />
+                  <NavButton 
+                    active={view === 'support'} 
+                    onClick={() => {
+                      if (!user) {
+                        setView('login');
+                        return;
+                      }
+                      setView('support');
+                    }} 
+                    icon={<Headphones size={20} />} 
+                    label="Support" 
+                  />
+                  <NavButton 
+                    active={view === 'orders'} 
+                    onClick={() => {
+                      if (!user) {
+                        setView('login');
+                        return;
+                      }
+                      setView('orders');
+                    }} 
+                    icon={<User size={20} />} 
+                    label="Orders" 
+                  />
+                </div>
+              </motion.nav>
+            )}
+          </AnimatePresence>
+
+          {/* Footer */}
+          <footer className="bg-slate-950 border-t border-white/5 py-12 px-4 pb-32">
+            <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8">
+              <div className="flex flex-col items-center md:items-start gap-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/20">
+                    <ShieldCheck className="text-white" size={18} />
+                  </div>
+                  <span className="text-lg font-bold tracking-tighter text-white">NEXUS</span>
+                </div>
+                <p className="text-blue-200/40 text-sm max-w-xs text-center md:text-left leading-relaxed">
+                  Your trusted partner for digital security. We provide premium VPN and digital services.
+                </p>
+              </div>
+              <div className="flex flex-col items-center md:items-end gap-3 text-center md:text-right">
+                <p className="text-white/60 text-sm font-medium">
+                  © 2026 NEXUS VPN. All rights reserved.
+                </p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-blue-400 text-[11px] font-bold uppercase tracking-[0.2em]">
+                    @ NEXUS PREMIUM SERVICES
+                  </p>
+                  <p className="text-blue-200/20 text-[10px] font-mono uppercase tracking-widest">
+                    Trusted by thousands of users
+                  </p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      </footer>
+          </footer>
+        </>
+      )}
     </div>
   );
 }
