@@ -55,7 +55,8 @@ import {
   serverTimestamp,
   getDocs,
   writeBatch,
-  increment
+  increment,
+  deleteField
 } from 'firebase/firestore';
 
 // --- Types ---
@@ -196,16 +197,51 @@ export default function App() {
   const [supportSending, setSupportSending] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
+  const [selectedSupportUserEmail, setSelectedSupportUserEmail] = useState<string | null>(null);
 
   // Payment Settings State
   const [bkashNum, setBkashNum] = useState('');
   const [nagadNum, setNagadNum] = useState('');
   const [savingPaymentSettings, setSavingPaymentSettings] = useState(false);
 
+  // Memoized data for Support Center (moved to top level to fix Rules of Hooks)
+  const conversations = useMemo(() => {
+    const groups: { [email: string]: any[] } = {};
+    supportMessages.forEach(m => {
+      if (!groups[m.userEmail]) groups[m.userEmail] = [];
+      groups[m.userEmail].push(m);
+    });
+    // Sort each conversation by date
+    Object.keys(groups).forEach(email => {
+      groups[email].sort((a, b) => (a.createdAt?.toMillis() || 0) - (b.createdAt?.toMillis() || 0));
+    });
+    return groups;
+  }, [supportMessages]);
+
+  const userList = useMemo(() => {
+    return Object.keys(conversations).map(email => {
+      const msgs = conversations[email];
+      const lastMsg = msgs[msgs.length - 1];
+      const userMsgs = msgs.filter(m => !m.isAdmin);
+      const unreadCount = userMsgs.filter(m => m.status === 'unread').length;
+      return {
+        email,
+        lastMessage: lastMsg.message,
+        lastDate: lastMsg.createdAt,
+        hasUnread: unreadCount > 0,
+        unreadCount,
+        userId: lastMsg.userId,
+        messageCount: userMsgs.length
+      };
+    }).sort((a, b) => (b.lastDate?.toMillis() || 0) - (a.lastDate?.toMillis() || 0));
+  }, [conversations]);
+
   // Helper for toast
   const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    if (msg === 'Successful Login' || msg === 'Successful Order') {
+      setToastMessage(msg);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
   };
 
   useEffect(() => {
@@ -451,7 +487,6 @@ export default function App() {
 
         try {
           await batch.commit();
-          showToast(`Cleaned up ${oldOrders.length} old orders and updated history.`);
         } catch (err) {
           console.error('Failed to cleanup old orders:', err);
         }
@@ -493,6 +528,7 @@ export default function App() {
     setAuthLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
+      showToast('Successful Login');
       setView('home');
       setEmail('');
       setPassword('');
@@ -506,8 +542,6 @@ export default function App() {
         setPasswordError(true);
       } else if (error.code === 'auth/invalid-email') {
         setEmailError(true);
-      } else {
-        showToast('Login failed. Please try again.');
       }
     }
   };
@@ -515,7 +549,6 @@ export default function App() {
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password || !displayName) {
-      showToast('Please fill all fields');
       return;
     }
     setAuthLoading(true);
@@ -536,7 +569,6 @@ export default function App() {
       };
       await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
       
-      showToast('Account created successfully!');
       setView('home');
       setEmail('');
       setPassword('');
@@ -544,11 +576,6 @@ export default function App() {
     } catch (error: any) {
       console.error('Sign up failed:', error);
       setAuthLoading(false);
-      let msg = 'Sign up failed';
-      if (error.code === 'auth/email-already-in-use') msg = 'Email already in use';
-      else if (error.code === 'auth/weak-password') msg = 'Password is too weak';
-      else if (error.code === 'auth/invalid-email') msg = 'Invalid email format';
-      showToast(msg);
     }
   };
 
@@ -556,15 +583,14 @@ export default function App() {
     setAuthLoading(true);
     try {
       await signInWithPopup(auth, googleProvider);
+      showToast('Successful Login');
       setView('home');
-      showToast('Login successful!');
     } catch (error: any) {
       if (error.code === 'auth/popup-closed-by-user') {
         setAuthLoading(false);
         return;
       }
       console.error('Login failed:', error);
-      showToast('Google login failed. Please try again.');
       setAuthLoading(false);
     }
     // Note: setAuthLoading(false) is handled in onAuthStateChanged
@@ -575,10 +601,8 @@ export default function App() {
       await signOut(auth);
       setUser(null);
       setView('home');
-      showToast('Logged out successfully');
     } catch (error) {
       console.error('Logout failed:', error);
-      showToast('Logout failed');
     }
   };
 
@@ -1168,126 +1192,289 @@ export default function App() {
   );
 
   const renderSupportView = () => {
-    console.log('supportMessages:', supportMessages);
+    const selectedMessages = selectedSupportUserEmail ? conversations[selectedSupportUserEmail] || [] : [];
+
+    const handleReply = async () => {
+      if (!replyText.trim() || !selectedSupportUserEmail) return;
+      
+      // If replyingTo is set, use it; otherwise find the latest unreplied message
+      let targetMsgId = replyingTo;
+      if (!targetMsgId) {
+        const unreplied = selectedMessages.filter(m => !m.isAdmin && !m.reply);
+        if (unreplied.length > 0) {
+          targetMsgId = unreplied[unreplied.length - 1].id;
+        }
+      }
+
+      if (!targetMsgId) {
+        showToast('Please select a message to reply to.');
+        return;
+      }
+      
+      try {
+        await updateDoc(doc(db, 'support_messages', targetMsgId), {
+          reply: replyText,
+          status: 'read',
+          repliedAt: serverTimestamp()
+        });
+        
+        setReplyText('');
+        setReplyingTo(null);
+        showToast('Reply sent successfully!');
+      } catch (err) {
+        showToast('Failed to send reply.');
+      }
+    };
+
     return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <button 
-          onClick={() => setAdminSubView('dashboard')}
-          className="text-blue-400 flex items-center gap-2 hover:text-blue-300 transition-all"
-        >
-          <ArrowRight className="rotate-180" size={16} /> Back
-        </button>
-        <h3 className="text-xl font-bold text-white flex items-center gap-2">
-          <MessageSquare size={20} className="text-blue-400" /> Support Inbox
-        </h3>
-        {supportMessages.length > 0 && (
-          <button 
-            onClick={async () => {
-              if (window.confirm('Are you sure you want to delete all messages?')) {
-                try {
-                  const batch = writeBatch(db);
-                  supportMessages.forEach((m) => {
-                    batch.delete(doc(db, 'support_messages', m.id));
-                  });
-                  await batch.commit();
-                  showToast('All messages deleted successfully!');
-                } catch (err) {
-                  showToast('Failed to delete all messages.');
+      <div className="h-[600px] flex flex-col bg-white/5 rounded-3xl border border-white/10 overflow-hidden">
+        {/* Header */}
+        <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/5">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setAdminSubView('dashboard')}
+              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all"
+            >
+              <ArrowRight className="rotate-180" size={18} />
+            </button>
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              <MessageSquare size={20} className="text-blue-400" /> Support Center
+            </h3>
+          </div>
+          {supportMessages.length > 0 && (
+            <button 
+              onClick={async () => {
+                if (window.confirm('Are you sure you want to delete all messages?')) {
+                  try {
+                    const batch = writeBatch(db);
+                    supportMessages.forEach((m) => {
+                      batch.delete(doc(db, 'support_messages', m.id));
+                    });
+                    await batch.commit();
+                    showToast('All messages deleted successfully!');
+                    setSelectedSupportUserEmail(null);
+                  } catch (err) {
+                    showToast('Failed to delete all messages.');
+                  }
                 }
-              }
-            }}
-            className="px-4 py-2 rounded-lg bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-all text-xs font-bold flex items-center gap-2"
-          >
-            <Trash2 size={14} /> Delete All
-          </button>
-        )}
-      </div>
-      <div className="space-y-4">
-        {supportMessages.length === 0 ? (
-          <p className="text-blue-200/20 text-center py-20 bg-white/5 rounded-3xl border border-dashed border-white/10">No messages yet</p>
-        ) : (
-          supportMessages.map((m) => (
-            <div key={m.id} className="p-6 rounded-3xl bg-white/5 border border-white/10 space-y-4">
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="text-white font-bold">{m.userEmail}</p>
-                  <p className="text-[10px] text-blue-200/40">{m.createdAt?.toDate().toLocaleString()}</p>
-                </div>
-                <button 
-                  onClick={() => setDeletingMessage(m)}
-                  className="p-2 rounded-lg bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-all"
+              }}
+              className="px-3 py-1.5 rounded-lg bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-all text-xs font-bold flex items-center gap-2"
+            >
+              <Trash2 size={14} /> Clear All
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 flex overflow-hidden">
+          {/* User List Pane */}
+          <div className={`w-full md:w-1/3 border-r border-white/10 overflow-y-auto bg-white/[0.02] ${selectedSupportUserEmail ? 'hidden md:block' : 'block'}`}>
+            {userList.length === 0 ? (
+              <div className="p-8 text-center text-blue-200/20 text-sm">No conversations</div>
+            ) : (
+              userList.map((u) => (
+                <button
+                  key={u.email}
+                  onClick={() => setSelectedSupportUserEmail(u.email)}
+                  className={`w-full p-4 text-left border-b border-white/5 transition-all hover:bg-white/5 flex flex-col gap-2 ${selectedSupportUserEmail === u.email ? 'bg-blue-600/10 border-r-2 border-r-blue-500' : ''}`}
                 >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-              <p className="text-blue-200/60 text-sm bg-white/5 p-4 rounded-2xl border border-white/5 leading-relaxed">{m.message}</p>
-              {m.reply ? (
-                <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/20">
-                  <p className="text-xs font-bold text-blue-400 mb-1">Your Reply:</p>
-                  <p className="text-blue-100/80 text-sm">{m.reply}</p>
-                </div>
-              ) : (
-                <div className="mt-4">
-                  {replyingTo === m.id ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={replyText}
-                        onChange={(e) => setReplyText(e.target.value)}
-                        placeholder="Type your reply..."
-                        className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-24 resize-none text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={async () => {
-                            if (!replyText.trim()) return;
-                            try {
-                              await updateDoc(doc(db, 'support_messages', m.id), {
-                                reply: replyText,
-                                status: 'read',
-                                repliedAt: serverTimestamp()
-                              });
-                              setReplyingTo(null);
-                              setReplyText('');
-                              showToast('Reply sent successfully!');
-                            } catch (err) {
-                              showToast('Failed to send reply.');
-                            }
-                          }}
-                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all"
-                        >
-                          Send Reply
-                        </button>
-                        <button
-                          onClick={() => {
-                            setReplyingTo(null);
-                            setReplyText('');
-                          }}
-                          className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white text-xs font-bold transition-all"
-                        >
-                          Cancel
-                        </button>
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-0.5">
+                      <span className="text-sm font-bold text-white truncate block max-w-[140px]">{u.email}</span>
+                      <span className="text-[10px] text-blue-200/40 font-mono">ID: {u.userId?.slice(-6).toUpperCase()}</span>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="text-[10px] text-blue-200/40">{u.lastDate?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded-md bg-white/5 text-blue-200/40 text-[9px] font-bold border border-white/5" title="Total Messages">
+                          {u.messageCount} Total
+                        </span>
+                        {u.unreadCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-bold animate-pulse shadow-lg shadow-red-500/20">
+                            {u.unreadCount} New
+                          </span>
+                        )}
                       </div>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setReplyingTo(m.id);
-                        setReplyText('');
-                      }}
-                      className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2"
+                  </div>
+                  <p className="text-xs text-blue-200/60 truncate italic">"{u.lastMessage}"</p>
+                </button>
+              ))
+            )}
+          </div>
+
+          {/* Chat Pane */}
+          <div className={`flex-1 flex flex-col bg-black/20 ${!selectedSupportUserEmail ? 'hidden md:flex' : 'flex'}`}>
+            {selectedSupportUserEmail ? (
+              <>
+                {/* Chat Header */}
+                <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => setSelectedSupportUserEmail(null)}
+                      className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all"
+                      title="Back to User List"
                     >
-                      <MessageSquare size={14} /> Reply
+                      <ArrowRight className="rotate-180" size={18} />
                     </button>
-                  )}
+                    <div>
+                      <p className="text-sm font-bold text-white">{selectedSupportUserEmail}</p>
+                      <p className="text-[10px] text-blue-200/40">User ID: {userList.find(u => u.email === selectedSupportUserEmail)?.userId || 'N/A'}</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={async () => {
+                      if (window.confirm('Delete this entire conversation? This cannot be undone.')) {
+                        try {
+                          const batch = writeBatch(db);
+                          selectedMessages.forEach(m => batch.delete(doc(db, 'support_messages', m.id)));
+                          await batch.commit();
+                          showToast('Conversation deleted');
+                          setSelectedSupportUserEmail(null);
+                        } catch (err) {
+                          showToast('Failed to delete conversation');
+                        }
+                      }
+                    }}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-red-400 hover:bg-red-600/10 transition-all text-xs font-bold"
+                  >
+                    <Trash2 size={14} /> Delete Chat
+                  </button>
                 </div>
-              )}
-            </div>
-          ))
-        )}
+
+                {/* Messages Area */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {selectedMessages.map((m) => (
+                    <div key={m.id} className="space-y-2">
+                      {m.isAdmin ? (
+                        /* Admin Message (if any exist from previous logic) */
+                        <div className="flex justify-end group relative">
+                          <div className="max-w-[80%] p-3 rounded-2xl rounded-tr-none bg-blue-600/20 border border-blue-500/30 text-blue-100 text-sm shadow-sm relative">
+                            <p>{m.message}</p>
+                            <p className="text-[9px] text-blue-400/50 mt-1 text-right">
+                              {m.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm('Delete this message?')) {
+                                  try {
+                                    await deleteDoc(doc(db, 'support_messages', m.id));
+                                    showToast('Message deleted');
+                                  } catch (err) {
+                                    showToast('Failed to delete message');
+                                  }
+                                }
+                              }}
+                              className="absolute -top-2 -left-2 p-1.5 rounded-full bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-all shadow-lg"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* User Message */
+                        <div className="flex flex-col gap-2">
+                          <div className="flex justify-start group relative">
+                            <div className={`max-w-[80%] p-3 rounded-2xl rounded-tl-none border text-sm shadow-sm relative transition-all ${replyingTo === m.id ? 'bg-blue-600/20 border-blue-500/50 ring-2 ring-blue-500/20' : 'bg-white/10 border-white/5 text-white'}`}>
+                              <p>{m.message}</p>
+                              <div className="flex items-center justify-between mt-1 gap-4">
+                                <button 
+                                  onClick={() => setReplyingTo(m.id)}
+                                  className={`text-[10px] font-bold uppercase tracking-wider hover:underline ${replyingTo === m.id ? 'text-blue-400' : 'text-blue-200/40'}`}
+                                >
+                                  {m.reply ? 'Edit Reply' : 'Reply'}
+                                </button>
+                                <p className="text-[9px] text-blue-200/30">
+                                  {m.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                              </div>
+                              <button 
+                                onClick={async () => {
+                                  if (window.confirm('Delete this message?')) {
+                                    try {
+                                      await deleteDoc(doc(db, 'support_messages', m.id));
+                                      showToast('Message deleted');
+                                    } catch (err) {
+                                      showToast('Failed to delete message');
+                                    }
+                                  }
+                                }}
+                                className="absolute -top-2 -right-2 p-1.5 rounded-full bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-all shadow-lg"
+                              >
+                                <Trash2 size={10} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Admin Reply (Attached to User Message) */}
+                          {m.reply && (
+                            <div className="flex justify-end group relative">
+                              <div className="max-w-[80%] p-3 rounded-2xl rounded-tr-none bg-blue-600/20 border border-blue-500/30 text-blue-100 text-sm shadow-sm relative">
+                                <p>{m.reply}</p>
+                                <p className="text-[9px] text-blue-400/50 mt-1 text-right">
+                                  {m.repliedAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                                <button 
+                                  onClick={async () => {
+                                    if (window.confirm('Delete this reply?')) {
+                                      try {
+                                        await updateDoc(doc(db, 'support_messages', m.id), {
+                                          reply: deleteField(),
+                                          repliedAt: deleteField()
+                                        });
+                                        showToast('Reply deleted');
+                                      } catch (err) {
+                                        showToast('Failed to delete reply');
+                                      }
+                                    }
+                                  }}
+                                  className="absolute -top-2 -left-2 p-1.5 rounded-full bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-all shadow-lg"
+                                >
+                                  <Trash2 size={10} />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Reply Input */}
+                <div className="p-4 border-t border-white/10 bg-white/[0.02]">
+                  <div className="flex gap-2">
+                    <textarea
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      placeholder="Type your reply..."
+                      className="flex-1 px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-12 resize-none text-sm"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleReply();
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={handleReply}
+                      disabled={!replyText.trim()}
+                      className="p-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Send size={20} />
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-blue-200/20">
+                <MessageSquare size={48} className="mb-4 opacity-10" />
+                <p className="text-sm">Select a conversation to start chatting</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-    </div>
-  );
+    );
   };
 
   const renderPaymentSettingsView = () => {
@@ -1676,14 +1863,13 @@ export default function App() {
 
               await batch.commit();
               
-              showToast('Order placed successfully!'); 
+              showToast('Successful Order'); 
               setView('orders'); 
               setSelectedProduct(null); 
               setTransactionId('');
             } catch (err) {
               console.error('Order placement error:', err);
               handleFirestoreError(err, OperationType.WRITE, 'used_transactions');
-              showToast('Failed to place order. Please try again.');
             } finally {
               setIsPlacingOrder(false);
             }
@@ -1724,114 +1910,167 @@ export default function App() {
     };
 
     return (
-      <div className="pb-24 pt-6 px-4 max-w-xl mx-auto">
-        <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
-            <ArrowRight className="rotate-180" size={20} />
-          </button>
-          <h2 className="text-3xl font-bold text-white tracking-tight">Customer Support</h2>
+      <div className="pb-24 pt-6 px-4 max-w-2xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setView('home')} className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95">
+              <ArrowRight className="rotate-180" size={20} />
+            </button>
+            <div>
+              <h2 className="text-2xl font-bold text-white tracking-tight">Support Center</h2>
+              <p className="text-xs text-blue-200/40">Need help? Send us a message below.</p>
+            </div>
+          </div>
+          <div className="w-12 h-12 rounded-2xl bg-blue-600/20 flex items-center justify-center text-blue-400">
+            <Headphones size={24} />
+          </div>
         </div>
-        <div className="space-y-6">
-          <div className="p-8 rounded-3xl bg-white/5 border border-white/10 text-center">
-            <Headphones size={48} className="mx-auto text-blue-500 mb-4" />
-            <h3 className="text-xl font-bold text-white mb-2">How can we help you?</h3>
-            <p className="text-blue-200/40 mb-6">Our team is available 24/7 to assist with your digital purchases.</p>
-            
-            <div className="space-y-4 text-left">
+
+        <div className="space-y-8">
+          {/* Telegram Channel Link */}
+          <a 
+            href="https://t.me/nexus_vpn_services" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="p-6 rounded-[2.5rem] bg-blue-600 text-white flex items-center justify-between group hover:bg-blue-500 transition-all shadow-xl shadow-blue-600/20"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-3xl bg-white/20 flex items-center justify-center">
+                <Send size={28} />
+              </div>
+              <div>
+                <h4 className="font-bold text-xl">Join Telegram Channel</h4>
+                <p className="text-blue-100/60 text-xs">Get instant updates and direct support</p>
+              </div>
+            </div>
+            <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center group-hover:translate-x-1 transition-all">
+              <ArrowRight size={20} />
+            </div>
+          </a>
+
+          {/* Send Message Form */}
+          <div className="p-8 rounded-[2.5rem] bg-white/5 border border-white/10 space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-blue-200/40 uppercase tracking-widest">Send a Message</h3>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest">Online</span>
+              </div>
+            </div>
+            <div className="space-y-4">
               <textarea 
                 value={supportMsg}
                 onChange={(e) => setSupportMsg(e.target.value)}
-                placeholder="Type your message here..."
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-32 resize-none"
+                placeholder="How can we help you today? Describe your issue in detail..."
+                className="w-full p-6 rounded-3xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all h-40 resize-none text-sm placeholder:text-blue-200/20"
               />
               <button 
                 onClick={handleSend}
-                disabled={supportSending}
-                className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                disabled={supportSending || !supportMsg.trim()}
+                className="w-full py-5 rounded-3xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-3 shadow-lg shadow-blue-600/10 active:scale-[0.98]"
               >
-                {supportSending ? 'Sending...' : 'Send Message'}
+                {supportSending ? (
+                  <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Send size={20} />
+                    Send Message
+                  </>
+                )}
               </button>
-
-              <div className="mt-8">
-                <h3 className="text-xl font-bold text-white mb-4">Your Messages</h3>
-                <div className="space-y-4">
-                  {supportMessages.map((m) => (
-                    <div key={m.id} className="p-4 rounded-2xl bg-white/5 border border-white/10">
-                      <p className="text-white text-sm">{m.message}</p>
-                      {m.reply && (
-                        <p className="text-emerald-400 text-sm mt-2">Reply: {m.reply}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="relative py-4">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-white/5"></span>
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-slate-900 px-2 text-blue-200/20 font-bold tracking-widest">Or</span>
-                </div>
-              </div>
-
-              <a 
-                href="https://t.me/nexus_vpn_services" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="w-full py-4 rounded-xl bg-[#24A1DE]/10 border border-[#24A1DE]/20 text-[#24A1DE] font-bold transition-all flex items-center justify-center gap-3 hover:bg-[#24A1DE] hover:text-white shadow-lg shadow-[#24A1DE]/10"
-              >
-                <Send size={20} />
-                Join our Telegram Channel
-              </a>
             </div>
           </div>
 
-          {supportMessages.length > 0 && (
-            <div className="space-y-4">
-              <h4 className="text-white font-bold">Your Messages</h4>
+          {/* Message History */}
+          <div className="space-y-6">
+            <h3 className="text-sm font-bold text-blue-200/40 uppercase tracking-widest px-4">Your Conversations</h3>
+            {supportMessages.length === 0 ? (
+              <div className="p-16 text-center rounded-[2.5rem] bg-white/[0.02] border border-dashed border-white/10 text-blue-200/20">
+                <MessageSquare size={48} className="mx-auto mb-4 opacity-10" />
+                <p className="text-sm">No messages yet. Start a conversation above.</p>
+              </div>
+            ) : (
               <div className="space-y-4">
-                {supportMessages.map(msg => (
-                  <div key={msg.id} className={`flex flex-col ${msg.reply ? 'items-start' : 'items-end'}`}>
-                    {/* User Message */}
-                    <div className="flex items-start gap-2 max-w-[85%]">
-                      <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                        {msg.userEmail?.charAt(0).toUpperCase()}
-                      </div>
-                      <div className="p-3 rounded-2xl bg-white/10 border border-white/5 text-white text-sm">
-                        {msg.message}
-                      </div>
-                    </div>
-                    
-                    {/* Admin Reply */}
-                    {msg.reply && (
-                      <div className="flex items-start gap-2 max-w-[85%] mt-2 ml-10">
-                        <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                          A
+                {supportMessages.map((msg) => (
+                  <div key={msg.id} className={`p-6 rounded-[2rem] border transition-all ${msg.isAdmin ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-white/5 border-white/10 hover:bg-white/[0.07]'}`}>
+                    {msg.isAdmin ? (
+                      /* Legacy Admin Reply Document */
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-2xl bg-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-600/20">
+                              <ShieldCheck size={20} />
+                            </div>
+                            <div>
+                              <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Nexus Support</p>
+                              <p className="text-[10px] text-blue-200/20">
+                                {msg.createdAt?.toDate().toLocaleString()}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest bg-emerald-500/20 text-emerald-400">Reply</span>
                         </div>
-                        <div className="p-3 rounded-2xl bg-emerald-600/10 border border-emerald-500/20 text-emerald-100 text-sm">
-                          {msg.reply}
+                        <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
+                          <p className="text-blue-100 text-sm leading-relaxed">{msg.message}</p>
                         </div>
+                      </div>
+                    ) : (
+                      /* User Message Card */
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-start">
+                          <div className="space-y-1">
+                            <p className="text-white text-sm font-medium leading-relaxed">{msg.message}</p>
+                            <p className="text-[10px] text-blue-200/20">
+                              {msg.createdAt?.toDate().toLocaleString()}
+                            </p>
+                          </div>
+                          <span className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest shrink-0 ${msg.reply ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                            {msg.reply ? 'REPLY' : 'PENDING'}
+                          </span>
+                        </div>
+                        
+                        {/* Admin Reply (Inside User Message Card) */}
+                        {msg.reply && (
+                          <div className="pt-4 border-t border-white/5 space-y-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-lg bg-emerald-600 flex items-center justify-center text-white">
+                                <ShieldCheck size={12} />
+                              </div>
+                              <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Nexus Support</p>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/20">
+                              <p className="text-blue-100 text-sm leading-relaxed">{msg.reply}</p>
+                              <p className="text-[9px] text-blue-400/30 mt-2 text-right">
+                                {msg.repliedAt?.toDate().toLocaleString()}
+                              </p>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* FAQs */}
+          <div className="space-y-4 pt-4">
+            <h4 className="text-sm font-bold text-blue-200/40 uppercase tracking-widest px-4">Common Questions</h4>
+            <div className="grid gap-3">
+              {[
+                "How to redeem my VPN code?",
+                "My payment is pending, what to do?",
+                "Refund policy for digital goods",
+                "How to change my account password?"
+              ].map((q, i) => (
+                <div key={i} className="p-5 rounded-3xl bg-white/5 border border-white/10 text-blue-200/60 text-sm cursor-pointer hover:bg-white/10 hover:text-white transition-all flex items-center justify-between group">
+                  {q}
+                  <ArrowRight size={16} className="opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all text-blue-400" />
+                </div>
+              ))}
             </div>
-          )}
-          
-          <div className="space-y-4">
-            <h4 className="text-white font-bold">Common Questions</h4>
-            {[
-              "How long does delivery take?",
-              "What if my code doesn't work?",
-              "Can I get a refund?",
-              "Which payment methods are accepted?"
-            ].map((q, i) => (
-              <div key={i} className="p-4 rounded-2xl bg-white/5 border border-white/10 text-blue-200/60 text-sm cursor-pointer hover:bg-white/10 transition-all">
-                {q}
-              </div>
-            ))}
           </div>
         </div>
       </div>
