@@ -238,7 +238,18 @@ export default function App() {
 
   // Helper for toast
   const showToast = (msg: string) => {
-    if (msg === 'Successful Login' || msg === 'Successful Order') {
+    // Admin sees all toasts, regular users see validation, success, and error messages
+    const allowedForUser = [
+      'Successful Login', 
+      'Successful Order',
+      'Transaction ID Already Used',
+      'Please enter Transaction ID',
+      'Message sent! We will contact you soon.',
+      'Your account has been blocked. Please contact support.',
+      'Please fill all required fields.'
+    ];
+
+    if (user?.role === 'admin' || allowedForUser.some(allowed => msg.includes(allowed))) {
       setToastMessage(msg);
       setTimeout(() => setToastMessage(null), 3000);
     }
@@ -432,71 +443,6 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [adminSubView]);
 
-  // Cleanup orders older than 24 hours and save to history
-  useEffect(() => {
-    if (!user || user.role !== 'admin' || allOrders.length === 0) return;
-
-    const cleanupOldOrders = async () => {
-      const now = new Date();
-      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      
-      const oldOrders = allOrders.filter(o => {
-        if (!o.createdAt) return false;
-        const createdAt = o.createdAt.toDate();
-        return createdAt < twentyFourHoursAgo;
-      });
-
-      if (oldOrders.length > 0) {
-        // Group by date
-        const dailyStats: { [date: string]: { count: number, total: number } } = {};
-        
-        oldOrders.forEach(o => {
-          const dateStr = o.createdAt.toDate().toISOString().split('T')[0];
-          if (!dailyStats[dateStr]) {
-            dailyStats[dateStr] = { count: 0, total: 0 };
-          }
-          dailyStats[dateStr].count += 1;
-          dailyStats[dateStr].total += o.total;
-        });
-
-        const batch = writeBatch(db);
-        
-        // Update history
-        for (const dateStr of Object.keys(dailyStats)) {
-          const historyRef = doc(db, 'order_history', dateStr);
-          const existing = orderHistory.find(h => h.id === dateStr);
-          
-          if (existing) {
-            batch.update(historyRef, {
-              count: increment(dailyStats[dateStr].count),
-              totalAmount: increment(dailyStats[dateStr].total)
-            });
-          } else {
-            batch.set(historyRef, {
-              date: dateStr,
-              count: dailyStats[dateStr].count,
-              totalAmount: dailyStats[dateStr].total
-            });
-          }
-        }
-
-        // Delete old orders
-        oldOrders.forEach(o => {
-          batch.delete(doc(db, 'orders', o.id));
-        });
-
-        try {
-          await batch.commit();
-        } catch (err) {
-          console.error('Failed to cleanup old orders:', err);
-        }
-      }
-    };
-
-    const timer = setTimeout(cleanupOldOrders, 5000); // Wait 5s for data to settle
-    return () => clearTimeout(timer);
-  }, [user, allOrders.length, orderHistory.length]);
-
   useEffect(() => {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
@@ -668,8 +614,9 @@ export default function App() {
       await Promise.all(updates);
       
       // Send confirmation email
+      let emailSent = false;
       try {
-        await fetch('/api/send-confirmation-email', {
+        const response = await fetch('/api/send-confirmation-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -677,15 +624,29 @@ export default function App() {
             orderId: order.id,
             items: order.items,
             total: order.total,
-            credentials: credentials // Passing the actual assigned credentials
+            credentials: credentials
           })
         });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+          console.error('Email API error:', result);
+          showToast(`Order confirmed, but email failed: ${result.error || 'Unknown error'}`);
+        } else {
+          console.log('Confirmation email sent successfully');
+          emailSent = true;
+        }
       } catch (emailErr) {
         console.error('Failed to send confirmation email:', emailErr);
-        // We don't block the UI if email fails, as the order is already confirmed in DB
+        showToast('Order confirmed, but email failed to send (Network error).');
       }
 
-      showToast('Order confirmed and credentials assigned successfully!');
+      if (emailSent) {
+        showToast('Order confirmed! Confirmation email with credentials has been sent.');
+      } else {
+        showToast('Order confirmed! Please manually provide credentials if email failed.');
+      }
     } catch (err: any) {
       console.error('Confirm error:', err);
       showToast('Failed to confirm order: ' + (err.message || 'Unknown error'));
@@ -1835,7 +1796,7 @@ export default function App() {
               const txSnap = await getDoc(txRef);
               
               if (txSnap.exists()) {
-                showToast('This Transaction ID has already been used.');
+                showToast('Transaction ID Already Used');
                 setIsPlacingOrder(false);
                 return;
               }

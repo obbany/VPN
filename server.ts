@@ -22,9 +22,16 @@ async function startServer() {
   app.post("/api/send-confirmation-email", async (req, res) => {
     const { email, orderId, items, total, credentials } = req.body;
 
+    console.log(`Attempting to send confirmation email for Order #${orderId} to ${email}`);
+
+    if (!email || !orderId || !items || !total) {
+      console.error("Missing required fields for email:", { email, orderId, items: !!items, total });
+      return res.status(400).json({ error: "Missing required fields for email confirmation." });
+    }
+
     if (!resend) {
-      console.warn("RESEND_API_KEY is not set. Skipping email.");
-      return res.status(200).json({ message: "Resend API key missing, but order confirmed." });
+      console.error("RESEND_API_KEY is not set. Cannot send email.");
+      return res.status(500).json({ error: "Email service is not configured (RESEND_API_KEY missing)." });
     }
 
     try {
@@ -57,6 +64,9 @@ async function startServer() {
         `;
       }).join("");
       
+      // IMPORTANT: If you are using a free Resend account without a verified domain, 
+      // you can only send emails to the email address you signed up with.
+      // To send to any email, you MUST verify your domain in the Resend dashboard.
       const { data, error } = await resend.emails.send({
         from: "Nexus VPN <onboarding@resend.dev>", 
         to: [email],
@@ -131,14 +141,15 @@ async function startServer() {
       });
 
       if (error) {
-        console.error("Resend Error:", error);
+        console.error("Resend API Error:", error);
         return res.status(500).json({ error: error.message });
       }
 
+      console.log(`Email sent successfully to ${email}. Data:`, data);
       res.status(200).json({ message: "Email sent successfully", data });
     } catch (err: any) {
-      console.error("Email Sending Error:", err);
-      res.status(500).json({ error: err.message });
+      console.error("Critical Email Sending Error:", err);
+      res.status(500).json({ error: err.message || "An unexpected error occurred while sending the email." });
     }
   });
 
