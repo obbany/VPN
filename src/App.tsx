@@ -28,7 +28,8 @@ import {
   MessageSquare,
   Database,
   Bookmark,
-  Send
+  Send,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, googleProvider, handleFirestoreError, OperationType, sendEmailVerification } from './firebase-config';
@@ -127,8 +128,16 @@ export default function App() {
     const saved = localStorage.getItem('nexus_view');
     return (saved as View) || 'home';
   });
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const [user, setUser] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('nexus_user_cache');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [allOrders, setAllOrders] = useState<Order[]>([]);
@@ -136,8 +145,18 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [supportMessages, setSupportMessages] = useState<any[]>([]);
   const [orderHistory, setOrderHistory] = useState<OrderHistory[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [productsLoading, setProductsLoading] = useState(true);
+  const [products, setProducts] = useState<Product[]>(() => {
+    try {
+      const saved = localStorage.getItem('nexus_products_cache');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [productsLoading, setProductsLoading] = useState(() => {
+    const saved = localStorage.getItem('nexus_products_cache');
+    return !saved;
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
@@ -158,7 +177,14 @@ export default function App() {
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [isConfirmingOrder, setIsConfirmingOrder] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [paymentSettings, setPaymentSettings] = useState({ bKash: '01700-000000', Nagad: '01700-000000' });
+  const [paymentSettings, setPaymentSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('nexus_payment_settings');
+      return saved ? JSON.parse(saved) : { bKash: '01700-000000', Nagad: '01700-000000' };
+    } catch (e) {
+      return { bKash: '01700-000000', Nagad: '01700-000000' };
+    }
+  });
   
   // Inventory State
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
@@ -181,7 +207,6 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
 
   // Product Form State
   const [newProduct, setNewProduct] = useState({
@@ -264,8 +289,14 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // If we have a firebase user but no profile yet, we are still "loading" auth
-        if (!user) setAuthLoading(true);
+        // If we already have a user in state that matches the current firebase user, 
+        // we can skip the initial loading state and just refresh in background
+        if (user?.uid === firebaseUser.uid) {
+          setAuthLoading(false);
+          setLoading(false);
+        } else {
+          setAuthLoading(true);
+        }
         
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
@@ -285,6 +316,7 @@ export default function App() {
               await updateDoc(doc(db, 'users', firebaseUser.uid), { role: 'admin' });
             }
             setUser(profile);
+            localStorage.setItem('nexus_user_cache', JSON.stringify(profile));
             setView(prev => (prev === 'login' || prev === 'signup') ? 'home' : prev);
           } else {
             const isDefaultAdmin = firebaseUser.email === 'robbanybagha805@gmail.com' || firebaseUser.email === 'brothersonfire208@gmail.com';
@@ -298,6 +330,7 @@ export default function App() {
             };
             await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
             setUser(newProfile);
+            localStorage.setItem('nexus_user_cache', JSON.stringify(newProfile));
             setView(prev => (prev === 'login' || prev === 'signup') ? 'home' : prev);
           }
         } catch (err) {
@@ -307,6 +340,7 @@ export default function App() {
         }
       } else {
         setUser(null);
+        localStorage.removeItem('nexus_user_cache');
         setAuthLoading(false);
         // If the current view requires auth, redirect to login, otherwise stay on home
         setView(prev => (prev === 'admin' || prev === 'payment' || prev === 'support' || prev === 'orders') ? 'login' : prev);
@@ -320,7 +354,9 @@ export default function App() {
   useEffect(() => {
     const qProducts = query(collection(db, 'products'), orderBy('createdAt', 'desc'));
     const unsubProducts = onSnapshot(qProducts, (snapshot) => {
-      setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
+      const fetchedProducts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
+      setProducts(fetchedProducts);
+      localStorage.setItem('nexus_products_cache', JSON.stringify(fetchedProducts));
       setProductsLoading(false);
     }, (err) => {
       handleFirestoreError(err, OperationType.GET, 'products');
@@ -335,7 +371,9 @@ export default function App() {
 
     const unsubPayments = onSnapshot(doc(db, 'config', 'payments'), (doc) => {
       if (doc.exists()) {
-        setPaymentSettings(doc.data() as any);
+        const data = doc.data() as any;
+        setPaymentSettings(data);
+        localStorage.setItem('nexus_payment_settings', JSON.stringify(data));
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, 'config/payments'));
 
@@ -433,9 +471,32 @@ export default function App() {
     };
   }, [user]);
 
+  const homeScrollPos = React.useRef(0);
+  const prevView = React.useRef(view);
+
+  // Function to navigate
+  const navigateTo = (newView: View) => {
+    if (view === 'home') {
+      homeScrollPos.current = window.scrollY;
+    }
+    
+    if (newView !== 'home') {
+      window.scrollTo(0, 0);
+    }
+    
+    setView(newView);
+  };
+
+  // Restore scroll position when returning to home
+  React.useLayoutEffect(() => {
+    if (view === 'home' && homeScrollPos.current > 0) {
+      window.scrollTo(0, homeScrollPos.current);
+    }
+  }, [view]);
+
   useEffect(() => {
     localStorage.setItem('nexus_view', view);
-    window.scrollTo({ top: 0, behavior: 'auto' });
+    prevView.current = view;
   }, [view]);
 
   useEffect(() => {
@@ -473,9 +534,22 @@ export default function App() {
     
     setAuthLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+      
+      // Fetch profile in background but proceed to home immediately if possible
+      const userDocPromise = getDoc(doc(db, 'users', firebaseUser.uid));
+      
+      userDocPromise.then((userDoc) => {
+        if (userDoc.exists()) {
+          const profile = userDoc.data() as UserProfile;
+          setUser(profile);
+          localStorage.setItem('nexus_user_cache', JSON.stringify(profile));
+        }
+      });
+
       showToast('Successful Login');
-      setView('home');
+      navigateTo('home');
       setEmail('');
       setPassword('');
     } catch (error: any) {
@@ -502,8 +576,6 @@ export default function App() {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const firebaseUser = userCredential.user;
       
-      await updateProfile(firebaseUser, { displayName });
-
       const isDefaultAdmin = email === 'robbanybagha805@gmail.com' || email === 'brothersonfire208@gmail.com';
       const newProfile: UserProfile = {
         uid: firebaseUser.uid,
@@ -513,9 +585,16 @@ export default function App() {
         blocked: false,
         createdAt: serverTimestamp()
       };
-      await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
+
+      // Run profile update and firestore save in parallel
+      await Promise.all([
+        updateProfile(firebaseUser, { displayName }),
+        setDoc(doc(db, 'users', firebaseUser.uid), newProfile)
+      ]);
       
-      setView('home');
+      setUser(newProfile);
+      localStorage.setItem('nexus_user_cache', JSON.stringify(newProfile));
+      navigateTo('home');
       setEmail('');
       setPassword('');
       setDisplayName('');
@@ -528,9 +607,21 @@ export default function App() {
   const handleGmailLogin = async () => {
     setAuthLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const userCredential = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = userCredential.user;
+      
+      const userDocPromise = getDoc(doc(db, 'users', firebaseUser.uid));
+      
+      userDocPromise.then((userDoc) => {
+        if (userDoc.exists()) {
+          const profile = userDoc.data() as UserProfile;
+          setUser(profile);
+          localStorage.setItem('nexus_user_cache', JSON.stringify(profile));
+        }
+      });
+
       showToast('Successful Login');
-      setView('home');
+      navigateTo('home');
     } catch (error: any) {
       if (error.code === 'auth/popup-closed-by-user') {
         setAuthLoading(false);
@@ -546,7 +637,7 @@ export default function App() {
     try {
       await signOut(auth);
       setUser(null);
-      setView('home');
+      navigateTo('home');
     } catch (error) {
       console.error('Logout failed:', error);
     }
@@ -1602,7 +1693,7 @@ export default function App() {
             </button>
           </p>
           <button 
-            onClick={() => setView('home')}
+            onClick={() => navigateTo('home')}
             className="text-white/40 text-xs font-bold hover:text-white/60 transition-all"
           >
             Back to Home
@@ -1632,7 +1723,7 @@ export default function App() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-        {productsLoading ? (
+        {(productsLoading && products.length === 0) ? (
           Array.from({ length: 10 }).map((_, i) => (
             <div key={i} className="rounded-2xl bg-white/5 border border-white/10 overflow-hidden animate-pulse">
               <div className="h-32 sm:h-40 bg-white/10" />
@@ -1649,7 +1740,6 @@ export default function App() {
         ) : filteredProducts.length > 0 ? (
           filteredProducts.map((product) => (
             <motion.div 
-              layout
               key={product.id}
               className="group rounded-2xl bg-white/5 border border-white/10 overflow-hidden hover:border-blue-500/50 transition-all duration-300"
             >
@@ -1674,15 +1764,15 @@ export default function App() {
                   <button 
                     onClick={() => { 
                       if (!user) {
-                        setView('login');
+                        navigateTo('login');
                         return;
                       }
                       setSelectedProduct(product); 
-                      setView('payment'); 
+                      navigateTo('payment'); 
                     }}
                     className="py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-all shadow-lg shadow-blue-600/20"
                   >
-                    Order Now
+                    Buy Now
                   </button>
                 </div>
               </div>
@@ -1701,152 +1791,263 @@ export default function App() {
   const renderPaymentPage = () => {
     if (!selectedProduct) {
       return (
-        <div className="pb-24 pt-6 px-4 max-w-xl mx-auto text-center">
-          <p className="text-blue-200/40 text-lg mb-4">No product selected.</p>
+        <div className="pb-24 pt-12 px-4 max-w-lg mx-auto text-center">
+          <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-white/10">
+            <Package className="text-blue-400/20" size={32} />
+          </div>
+          <p className="text-blue-200/40 text-base mb-8 font-medium">No product selected for payment.</p>
           <button 
-            onClick={() => setView('home')}
-            className="px-8 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all"
+            onClick={() => navigateTo('home')}
+            className="px-8 py-3 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-500 transition-all shadow-xl shadow-blue-600/20 active:scale-95"
           >
-            Go Back
+            Return to Catalog
           </button>
         </div>
       );
     }
 
     return (
-      <div className="pb-24 pt-6 px-4 max-w-xl mx-auto">
-        <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
-            <ArrowRight className="rotate-180" size={20} />
-          </button>
-          <h2 className="text-3xl font-bold text-white tracking-tight">Secure Payment</h2>
-        </div>
-        
-        <div className="space-y-6">
-          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-4">
-            <img src={selectedProduct.image} alt={selectedProduct.name} className="w-16 h-16 rounded-xl object-cover" referrerPolicy="no-referrer" />
+      <div className="pb-24 pt-6 px-4 max-w-lg mx-auto">
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => navigateTo('home')} 
+              className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-90"
+            >
+              <ArrowRight className="rotate-180" size={18} />
+            </button>
             <div>
-              <h4 className="text-white font-bold">{selectedProduct.name}</h4>
-              <p className="text-blue-400 font-bold">৳{selectedProduct.price}</p>
+              <h2 className="text-2xl font-black text-white tracking-tight">Checkout</h2>
+              <p className="text-blue-200/40 text-[10px] font-bold uppercase tracking-widest">Secure Purchase</p>
             </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-4">
-          <button 
-            onClick={() => setPaymentMethod('bKash')}
-            className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${paymentMethod === 'bKash' ? 'bg-pink-600/20 border-pink-500 text-white' : 'bg-white/5 border-white/10 text-white/40'}`}
-          >
-            <img src="https://i.ibb.co/q3YTcmPs/332c2060c5.jpg" alt="bKash" className="w-16 h-16 rounded-full object-cover" referrerPolicy="no-referrer" />
-            bKash
-          </button>
-          <button 
-            onClick={() => setPaymentMethod('Nagad')}
-            className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${paymentMethod === 'Nagad' ? 'bg-orange-600/20 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-white/40'}`}
-          >
-            <img src="https://i.ibb.co/Zzjzc6J8/f50dbb811b.jpg" alt="Nagad" className="w-16 h-16 rounded-full object-cover" referrerPolicy="no-referrer" />
-            Nagad
-          </button>
+          <div className="hidden xs:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+            <ShieldCheck size={14} className="text-emerald-400" />
+            <span className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider">SSL Secured</span>
+          </div>
         </div>
+        
+        <div className="grid grid-cols-1 gap-6">
+          {/* Product Summary Card - More Compact */}
+          <motion.div 
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.1 }}
+            className="p-5 rounded-3xl bg-gradient-to-br from-white/10 to-white/[0.02] border border-white/10 flex items-center gap-5 shadow-xl"
+          >
+            <div className="relative shrink-0">
+              <div className="absolute inset-0 bg-blue-500 blur-xl opacity-20" />
+              <img 
+                src={selectedProduct.image} 
+                alt={selectedProduct.name} 
+                className="relative w-16 h-16 rounded-2xl object-cover border border-white/10 shadow-lg" 
+                referrerPolicy="no-referrer" 
+              />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="inline-block px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-[9px] font-bold text-blue-400 uppercase tracking-widest mb-1">
+                {selectedProduct.category || 'Premium Service'}
+              </div>
+              <h4 className="text-lg font-black text-white truncate">{selectedProduct.name}</h4>
+              <p className="text-blue-200/60 text-[10px] mb-1 line-clamp-2">{selectedProduct.description}</p>
+              <p className="text-blue-400 text-xs font-bold">৳{selectedProduct.price}</p>
+            </div>
+          </motion.div>
 
-        <div className="p-6 rounded-3xl bg-white/5 border border-white/10 space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-blue-200/60 text-sm">Send money to this number:</span>
-            <div className="flex items-center gap-2">
-              <span className="text-white font-mono font-bold">{paymentMethod === 'bKash' ? paymentSettings.bKash : paymentSettings.Nagad}</span>
+          {/* Payment Method Selection - Smaller Buttons */}
+          <div className="space-y-3">
+            <h3 className="text-[10px] font-black text-blue-200/40 uppercase tracking-[0.2em] px-1">Select Payment Method</h3>
+            <div className="grid grid-cols-2 gap-3">
               <button 
-                onClick={() => handleCopy(paymentMethod === 'bKash' ? paymentSettings.bKash : paymentSettings.Nagad)}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-blue-400 transition-all"
+                onClick={() => setPaymentMethod('bKash')}
+                className={`group relative p-4 rounded-2xl border transition-all duration-300 flex items-center gap-3 overflow-hidden ${
+                  paymentMethod === 'bKash' 
+                    ? 'bg-pink-600/10 border-pink-500/50 shadow-lg shadow-pink-600/5' 
+                    : 'bg-white/5 border-white/10 hover:border-white/20'
+                }`}
               >
-                {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                <div className="w-10 h-10 rounded-xl overflow-hidden shadow-md border border-white/10 shrink-0">
+                  <img src="https://i.ibb.co/q3YTcmPs/332c2060c5.jpg" alt="bKash" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                </div>
+                <span className={`font-black tracking-widest uppercase text-[10px] ${paymentMethod === 'bKash' ? 'text-pink-400' : 'text-white/40'}`}>bKash</span>
+                {paymentMethod === 'bKash' && (
+                  <div className="ml-auto">
+                    <CheckCircle2 size={14} className="text-pink-500" />
+                  </div>
+                )}
+              </button>
+
+              <button 
+                onClick={() => setPaymentMethod('Nagad')}
+                className={`group relative p-4 rounded-2xl border transition-all duration-300 flex items-center gap-3 overflow-hidden ${
+                  paymentMethod === 'Nagad' 
+                    ? 'bg-orange-600/10 border-orange-500/50 shadow-lg shadow-orange-600/5' 
+                    : 'bg-white/5 border-white/10 hover:border-white/20'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-xl overflow-hidden shadow-md border border-white/10 shrink-0">
+                  <img src="https://i.ibb.co/Zzjzc6J8/f50dbb811b.jpg" alt="Nagad" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                </div>
+                <span className={`font-black tracking-widest uppercase text-[10px] ${paymentMethod === 'Nagad' ? 'text-orange-400' : 'text-white/40'}`}>Nagad</span>
+                {paymentMethod === 'Nagad' && (
+                  <div className="ml-auto">
+                    <CheckCircle2 size={14} className="text-orange-500" />
+                  </div>
+                )}
               </button>
             </div>
           </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-blue-200/60">Total Amount:</span>
-            <span className="text-blue-400 font-bold">৳{totalPrice}</span>
+
+          {/* Payment Instructions Card - Compact */}
+          <motion.div 
+            key={paymentMethod}
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="p-6 rounded-[2rem] bg-slate-900 border border-white/5 relative overflow-hidden shadow-xl"
+          >
+            <div className={`absolute top-0 right-0 w-24 h-24 blur-[60px] opacity-10 ${paymentMethod === 'bKash' ? 'bg-pink-600' : 'bg-orange-600'}`} />
+            
+            <div className="relative z-10 space-y-5">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <h3 className="text-white font-black text-base">Payment Steps</h3>
+                  <p className="text-blue-200/40 text-[9px] font-bold uppercase tracking-widest">Follow carefully</p>
+                </div>
+                <div className={`p-2.5 rounded-xl ${paymentMethod === 'bKash' ? 'bg-pink-600/20 text-pink-400' : 'bg-orange-600/20 text-orange-400'}`}>
+                  <CreditCard size={18} />
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/5 space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-blue-200/40 text-[9px] font-bold uppercase tracking-widest">Personal Number (Send Money)</span>
+                  <div className="flex items-center justify-between bg-black/40 p-3 rounded-xl border border-white/5">
+                    <span className="text-lg font-mono font-black text-white tracking-wider">
+                      {paymentMethod === 'bKash' ? paymentSettings.bKash : paymentSettings.Nagad}
+                    </span>
+                    <button 
+                      onClick={() => handleCopy(paymentMethod === 'bKash' ? paymentSettings.bKash : paymentSettings.Nagad)}
+                      className={`p-2 rounded-lg transition-all active:scale-90 ${
+                        paymentMethod === 'bKash' ? 'bg-pink-600/20 text-pink-400' : 'bg-orange-600/20 text-orange-400'
+                      }`}
+                    >
+                      {copied ? <Check size={16} /> : <Copy size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                  <span className="text-blue-200/60 text-[10px] font-medium">Amount to Send:</span>
+                  <span className="text-lg font-black text-blue-400">৳{totalPrice}</span>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                <label className="block text-[9px] font-black text-blue-200/40 uppercase tracking-[0.2em] ml-1">Transaction ID (TrxID)</label>
+                <div className="relative">
+                  <input 
+                    type="text"
+                    value={transactionId}
+                    onChange={(e) => setTransactionId(e.target.value)}
+                    placeholder="Enter 10-digit TrxID"
+                    className="w-full px-5 py-3.5 rounded-2xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-mono font-bold text-base uppercase tracking-widest placeholder:text-white/10"
+                  />
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-200/10">
+                    <Database size={16} />
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 px-1">
+                  <AlertCircle size={12} className="text-blue-200/20 mt-0.5 shrink-0" />
+                  <p className="text-[9px] text-blue-200/30 leading-relaxed">
+                    পেমেন্ট করার পর প্রাপ্ত ট্রানজেকশন আইডিটি এখানে দিন।
+                  </p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Action Button - More Refined */}
+          <div className="space-y-4">
+            <button 
+              onClick={async () => { 
+                if (!user) return;
+                if (!transactionId.trim()) {
+                  showToast('Please enter Transaction ID');
+                  return;
+                }
+                setIsPlacingOrder(true);
+                try {
+                  const txRef = doc(db, 'used_transactions', transactionId.trim());
+                  const txSnap = await getDoc(txRef);
+                  if (txSnap.exists()) {
+                    showToast('Transaction ID Already Used');
+                    setIsPlacingOrder(false);
+                    return;
+                  }
+                  const orderData = {
+                    userId: user.uid,
+                    userEmail: user.email,
+                    items: [{ ...selectedProduct, quantity: 1 }],
+                    total: totalPrice,
+                    paymentMethod: paymentMethod,
+                    transactionId: transactionId.trim(),
+                    status: 'pending',
+                    createdAt: serverTimestamp()
+                  };
+                  const batch = writeBatch(db);
+                  const orderRef = doc(collection(db, 'orders'));
+                  batch.set(orderRef, orderData);
+                  batch.set(txRef, { 
+                    usedAt: serverTimestamp(), 
+                    userId: user.uid,
+                    orderId: orderRef.id 
+                  });
+                  await batch.commit();
+                  showToast('Successful Order'); 
+                  setView('orders'); 
+                  setSelectedProduct(null); 
+                  setTransactionId('');
+                } catch (err) {
+                  console.error('Order placement error:', err);
+                  handleFirestoreError(err, OperationType.WRITE, 'used_transactions');
+                } finally {
+                  setIsPlacingOrder(false);
+                }
+              }}
+              disabled={isPlacingOrder || !transactionId.trim()}
+              className="group relative w-full py-4.5 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black text-base transition-all shadow-xl shadow-blue-600/20 active:scale-[0.98] overflow-hidden"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+              <span className="relative z-10 flex items-center justify-center gap-2.5">
+                {isPlacingOrder ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    PROCESSING...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={20} />
+                    COMPLETE ORDER
+                  </>
+                )}
+              </span>
+            </button>
+
+            <div className="flex items-center justify-center gap-4 text-blue-200/10">
+              <div className="flex items-center gap-1.5">
+                <ShieldCheck size={12} />
+                <span className="text-[8px] font-bold uppercase tracking-widest">SSL Secure</span>
+              </div>
+              <div className="w-1 h-1 rounded-full bg-white/5" />
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 size={12} />
+                <span className="text-[8px] font-bold uppercase tracking-widest">Instant Delivery</span>
+              </div>
+            </div>
           </div>
         </div>
-
-        <div className="space-y-4">
-          <label className="block text-sm font-medium text-blue-100">Transaction ID</label>
-          <input 
-            type="text"
-            value={transactionId}
-            onChange={(e) => setTransactionId(e.target.value)}
-            placeholder="Enter your TrxID here"
-            className="w-full px-4 py-4 rounded-2xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-mono uppercase"
-          />
-          <p className="text-xs text-blue-200/30">Enter the transaction ID you received after payment.</p>
-        </div>
-
-        <button 
-          onClick={async () => { 
-            if (!user) return;
-            
-            if (!transactionId.trim()) {
-              showToast('Please enter Transaction ID');
-              return;
-            }
-
-            setIsPlacingOrder(true);
-            
-            try {
-              // Check if transaction ID is already used
-              const txRef = doc(db, 'used_transactions', transactionId.trim());
-              const txSnap = await getDoc(txRef);
-              
-              if (txSnap.exists()) {
-                showToast('Transaction ID Already Used');
-                setIsPlacingOrder(false);
-                return;
-              }
-
-              const orderData = {
-                userId: user.uid,
-                userEmail: user.email,
-                items: [{ ...selectedProduct, quantity: 1 }],
-                total: totalPrice,
-                paymentMethod: paymentMethod,
-                transactionId: transactionId.trim(),
-                status: 'pending',
-                createdAt: serverTimestamp()
-              };
-
-              // Use a batch to ensure atomicity
-              const batch = writeBatch(db);
-              const orderRef = doc(collection(db, 'orders'));
-              batch.set(orderRef, orderData);
-              batch.set(txRef, { 
-                usedAt: serverTimestamp(), 
-                userId: user.uid,
-                orderId: orderRef.id 
-              });
-
-              await batch.commit();
-              
-              showToast('Successful Order'); 
-              setView('orders'); 
-              setSelectedProduct(null); 
-              setTransactionId('');
-            } catch (err) {
-              console.error('Order placement error:', err);
-              handleFirestoreError(err, OperationType.WRITE, 'used_transactions');
-            } finally {
-              setIsPlacingOrder(false);
-            }
-          }}
-          disabled={isPlacingOrder || !transactionId.trim()}
-          className="w-full py-4 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-lg transition-all shadow-lg shadow-blue-600/20"
-        >
-          {isPlacingOrder ? 'Processing...' : 'Verify & Complete Order'}
-        </button>
-
-        <div className="flex items-center justify-center gap-2 text-blue-200/40 text-sm">
-          <ShieldCheck size={16} /> Secure 256-bit SSL Encrypted Payment
-        </div>
       </div>
-    </div>
-  );
+    );
   };
 
   const renderSupportPage = () => {
@@ -1875,7 +2076,7 @@ export default function App() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-4">
-            <button onClick={() => setView('home')} className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95">
+            <button onClick={() => navigateTo('home')} className="p-2.5 rounded-2xl bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95">
               <ArrowRight className="rotate-180" size={20} />
             </button>
             <div>
@@ -2201,7 +2402,7 @@ export default function App() {
     return (
       <div className="pb-24 pt-6 px-4 max-w-3xl mx-auto">
         <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+          <button onClick={() => navigateTo('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
             <ArrowRight className="rotate-180" size={20} />
           </button>
           <h2 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
@@ -2214,7 +2415,7 @@ export default function App() {
             <CreditCard size={64} className="mx-auto text-blue-200/10 mb-4" />
             <p className="text-blue-200/40 text-lg">No orders found</p>
             <button 
-              onClick={() => setView('home')}
+              onClick={() => navigateTo('home')}
               className="mt-6 px-8 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-500 transition-all"
             >
               Browse Products
@@ -2584,7 +2785,7 @@ export default function App() {
       <div className="pb-24 pt-6 px-4 max-w-6xl mx-auto space-y-8">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <button onClick={() => setView('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
+            <button onClick={() => navigateTo('home')} className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all">
               <ArrowRight className="rotate-180" size={20} />
             </button>
             <h2 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
@@ -2879,21 +3080,6 @@ export default function App() {
     </AnimatePresence>
   );
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <motion.div 
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-            className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
-          />
-          <p className="text-blue-200/60 font-medium animate-pulse">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
   const isAuthView = (view === 'login' || view === 'signup' || (!user && view !== 'home'));
 
   return (
@@ -2915,21 +3101,32 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {isAuthView ? (
+      {loading && !products.length ? (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <motion.div 
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+              className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"
+            />
+            <p className="text-blue-200/60 font-medium animate-pulse">Loading...</p>
+          </div>
+        </div>
+      ) : isAuthView ? (
         renderAuthView()
       ) : (
         <>
           {/* Header */}
           <header className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-bottom border-white/5 px-4 py-4">
             <div className="max-w-7xl mx-auto flex items-center justify-between">
-              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
+              <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigateTo('home')}>
                 <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/30">
                   <ShieldCheck className="text-white" />
                 </div>
                 <span className="text-xl font-bold tracking-tighter text-white">NEXUS</span>
               </div>
               <div className="flex items-center gap-4">
-                <AnimatePresence mode="wait">
+                <AnimatePresence>
                   {user ? (
                     <motion.div 
                       key="user-actions"
@@ -2941,7 +3138,7 @@ export default function App() {
                     >
                       {user.role === 'admin' && (
                         <button 
-                          onClick={() => setView('admin')}
+                          onClick={() => navigateTo('admin')}
                           className={`p-2 rounded-xl transition-all ${view === 'admin' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/40 hover:text-white'}`}
                         >
                           <Settings size={20} />
@@ -2965,13 +3162,13 @@ export default function App() {
                         className="flex items-center gap-2"
                       >
                         <button 
-                          onClick={() => setView('login')}
+                          onClick={() => navigateTo('login')}
                           className="px-4 py-2 rounded-xl bg-white/5 text-white text-xs font-bold hover:bg-white/10 transition-all border border-white/10"
                         >
                           Login
                         </button>
                         <button 
-                          onClick={() => setView('signup')}
+                          onClick={() => navigateTo('signup')}
                           className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20"
                         >
                           Sign Up
@@ -2992,21 +3189,11 @@ export default function App() {
 
           {/* Main Content */}
           <main className="relative flex-grow">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={view}
-                initial={{ opacity: 0, x: 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-              >
-                {view === 'home' && renderHomepage()}
-                {view === 'payment' && renderPaymentPage()}
-                {view === 'support' && renderSupportPage()}
-                {view === 'orders' && renderOrdersPage()}
-                {view === 'admin' && user?.role === 'admin' && renderAdminPanel()}
-              </motion.div>
-            </AnimatePresence>
+            {view === 'home' && renderHomepage()}
+            {view === 'payment' && renderPaymentPage()}
+            {view === 'support' && renderSupportPage()}
+            {view === 'orders' && renderOrdersPage()}
+            {view === 'admin' && user?.role === 'admin' && renderAdminPanel()}
           </main>
 
           {/* Bottom Navigation */}
@@ -3022,7 +3209,7 @@ export default function App() {
                 <div className="bg-white/5 backdrop-blur-2xl border border-white/10 rounded-2xl p-1.5 shadow-2xl flex items-center justify-around">
                   <NavButton 
                     active={view === 'home'} 
-                    onClick={() => setView('home')} 
+                    onClick={() => navigateTo('home')} 
                     icon={<Home size={20} />} 
                     label="Home" 
                   />
@@ -3030,10 +3217,10 @@ export default function App() {
                     active={view === 'support'} 
                     onClick={() => {
                       if (!user) {
-                        setView('login');
+                        navigateTo('login');
                         return;
                       }
-                      setView('support');
+                      navigateTo('support');
                     }} 
                     icon={<Headphones size={20} />} 
                     label="Support" 
@@ -3042,10 +3229,10 @@ export default function App() {
                     active={view === 'orders'} 
                     onClick={() => {
                       if (!user) {
-                        setView('login');
+                        navigateTo('login');
                         return;
                       }
-                      setView('orders');
+                      navigateTo('orders');
                     }} 
                     icon={<User size={20} />} 
                     label="Orders" 
